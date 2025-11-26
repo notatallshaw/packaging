@@ -10,11 +10,18 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Callable, NamedTuple, SupportsInt, Tuple, Union
+from typing import Any, Callable, Final, NamedTuple, SupportsInt, Tuple, Union, Literal
 
 from ._structures import Infinity, InfinityType, NegativeInfinity, NegativeInfinityType
 
 __all__ = ["VERSION_PATTERN", "InvalidVersion", "Version", "parse"]
+
+
+class _SentinelType:
+    __slots__ = ()
+
+_SENTINEL = _SentinelType()
+
 
 LocalType = Tuple[Union[int, str], ...]
 
@@ -155,6 +162,9 @@ flags set.
 
 :meta hide-value:
 """
+
+# Validation pattern for local version in replace()
+_LOCAL_PATTERN = re.compile(r"^[a-z0-9]+(?:[-_\.][a-z0-9]+)*$", re.IGNORECASE)
 
 
 class Version(_BaseVersion):
@@ -434,6 +444,114 @@ class Version(_BaseVersion):
         0
         """
         return self.release[2] if len(self.release) >= 3 else 0
+
+    def replace(
+        self,
+        *,
+        epoch: int | None | _SentinelType = _SENTINEL,
+        release: tuple[int, ...] | None | _SentinelType = _SENTINEL,
+        pre: tuple[Literal["a", "b", "rc"], int] | None | _SentinelType = _SENTINEL,
+        post: int | None | _SentinelType = _SENTINEL,
+        dev: int | None | _SentinelType = _SENTINEL,
+        local: str | None | _SentinelType = _SENTINEL,
+    ) -> Version:
+        """Return a new Version with specified components replaced.
+
+        This method creates a new Version object efficiently without string
+        serialization and regex parsing, while still validating all inputs.
+
+        Examples:
+
+        >>> v = Version("1.2.3")
+        >>> v.replace(release=(2, 0, 0))
+        <Version('2.0.0')>
+        >>> v.replace(alpha=1, post=1)
+        <Version('1.2.3a1.post1')>
+        >>> Version("1.2.3a1").replace(alpha=None)
+        <Version('1.2.3')>
+        >>> Version("1.2.3+local").replace(local=None)
+        <Version('1.2.3')>
+        """
+        # Process epoch
+        if epoch is _SENTINEL:
+            new_epoch = self._version.epoch
+        elif epoch is None:
+            new_epoch = 0
+        else:
+            # Mypy doesn't narrow on `is _SENTINEL`, but type is int here
+            if epoch < 0:  # type: ignore[operator]
+                raise InvalidVersion(f"epoch must be non-negative, got {epoch}")
+            new_epoch = epoch  # type: ignore[assignment]
+
+        # Process release
+        if release is _SENTINEL:
+            new_release = self._version.release
+        elif release is None:
+            new_release = (0,)
+        else:
+            if not release:
+                raise InvalidVersion("release tuple cannot be empty")
+            if not all(i >= 0 for i in release):  # type: ignore[union-attr]
+                raise InvalidVersion("release must be a tuple of non-negative integers")
+            new_release = release  # type: ignore[assignment]
+
+        # Process pre-release (alpha, beta, rc)
+        if pre is _SENTINEL:
+            new_pre = self._version.pre
+        elif pre is None:
+            new_pre = None
+        else:
+            new_pre = pre  # type: ignore[assignment]
+
+        # Process post
+        if post is _SENTINEL:
+            new_post = self._version.post
+        elif post is None:
+            new_post = None
+        else:
+            if post < 0:  # type: ignore[operator]
+                raise InvalidVersion(f"post must be non-negative, got {post}")
+            new_post = ("post", post)  # type: ignore[assignment]
+
+        # Process dev
+        if dev is _SENTINEL:
+            new_dev = self._version.dev
+        elif dev is None:
+            new_dev = None
+        else:
+            if dev < 0:  # type: ignore[operator]
+                raise InvalidVersion(f"dev must be non-negative, got {dev}")
+            new_dev = ("dev", dev)  # type: ignore[assignment]
+
+        # Process local
+        if local is _SENTINEL:
+            new_local = self._version.local
+        elif local is None:
+            new_local = None
+        else:
+            if not _LOCAL_PATTERN.match(local):  # type: ignore[arg-type]
+                raise InvalidVersion(f"Invalid local version: {local!r}")
+            new_local = _parse_local_version(local)  # type: ignore[arg-type]
+
+        # Create new Version instance bypassing __init__ for efficiency
+        new_version = object.__new__(Version)
+        new_version._version = _Version(
+            epoch=new_epoch,
+            release=new_release,
+            pre=new_pre,
+            post=new_post,
+            dev=new_dev,
+            local=new_local,
+        )
+        new_version._key = _cmpkey(
+            new_epoch,
+            new_release,
+            new_pre,
+            new_post,
+            new_dev,
+            new_local,
+        )
+        return new_version
 
 
 class _TrimmedRelease(Version):
