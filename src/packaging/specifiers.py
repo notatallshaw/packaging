@@ -1137,22 +1137,24 @@ class SpecifierSet(BaseSpecifier):
 
         # Finally if prereleases is None, apply PEP 440 logic:
         # exclude prereleases unless there are no final releases that matched.
-        filtered_items: list[Any] = []
-        found_prereleases: list[Any] = []
-        found_final_release = False
+        def _pep440_filter_prereleases() -> Iterator[Any]:
+            found_prereleases: list[Any] = []
+            found_final_release = False
 
-        for item in iterable:
-            parsed_version = _coerce_version(item if key is None else key(item))
-            # Arbitrary strings are always included as it is not
-            # possible to determine if they are prereleases,
-            # and they have already passed all specifiers.
-            if parsed_version is None:
-                filtered_items.append(item)
-                found_prereleases.append(item)
-            elif parsed_version.is_prerelease:
-                found_prereleases.append(item)
-            else:
-                filtered_items.append(item)
-                found_final_release = True
+            for item in iterable:
+                parsed_version = _coerce_version(item if key is None else key(item))
+                # Arbitrary strings are always included as it is not
+                # possible to determine if they are prereleases,
+                # and they have already passed all specifiers.
+                if parsed_version is None:
+                    yield item
+                elif not parsed_version.is_prerelease:
+                    found_final_release = True
+                    yield item
+                elif not found_final_release:
+                    found_prereleases.append(item)
 
-        return iter(filtered_items if found_final_release else found_prereleases)
+            if not found_final_release:
+                yield from found_prereleases
+
+        return _pep440_filter_prereleases()
