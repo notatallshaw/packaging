@@ -1,0 +1,279 @@
+# This file is dual licensed under the terms of the Apache License, Version
+# 2.0, and the BSD License. See the LICENSE file in the root of this repository
+# for complete details.
+
+"""Property tests for ``VersionRange`` set-algebra invariants.
+
+These exercise the public ``union``, ``intersect``, and ``complement``
+methods (and their operator aliases) against pseudo-random
+SpecifierSets and verify the laws a Boolean lattice must obey:
+identity, idempotence, commutativity, associativity, distributivity,
+double-complement, De Morgan, and consistency with ``__contains__``.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+import pytest
+from hypothesis import given
+
+from packaging.ranges import VersionRange
+from packaging.specifiers import SpecifierSet
+
+from .strategies import SETTINGS, VERSION_POOL, pep440_versions, specifier_sets
+
+if TYPE_CHECKING:
+    from packaging.version import Version
+
+pytestmark = pytest.mark.property
+
+
+def _to_range(spec_set: SpecifierSet) -> VersionRange:
+    """Lift a ``SpecifierSet`` into the assumed-non-``===`` range domain."""
+    r = VersionRange.from_specifier_set(spec_set)
+    assert r is not None
+    return r
+
+
+@given(spec_set=specifier_sets())
+@SETTINGS
+def test_intersect_with_unbounded_is_identity(spec_set: SpecifierSet) -> None:
+    r = _to_range(spec_set)
+    u = VersionRange.unbounded()
+    assert r.intersect(u) == r
+    assert u.intersect(r) == r
+
+
+@given(spec_set=specifier_sets())
+@SETTINGS
+def test_union_with_empty_is_identity(spec_set: SpecifierSet) -> None:
+    r = _to_range(spec_set)
+    e = VersionRange.empty()
+    assert r.union(e) == r
+    assert e.union(r) == r
+
+
+@given(spec_set=specifier_sets())
+@SETTINGS
+def test_intersect_with_empty_is_empty(spec_set: SpecifierSet) -> None:
+    r = _to_range(spec_set)
+    e = VersionRange.empty()
+    assert r.intersect(e) == e
+    assert e.intersect(r) == e
+
+
+@given(spec_set=specifier_sets())
+@SETTINGS
+def test_union_with_unbounded_is_unbounded(spec_set: SpecifierSet) -> None:
+    r = _to_range(spec_set)
+    u = VersionRange.unbounded()
+    assert r.union(u) == u
+    assert u.union(r) == u
+
+
+@given(spec_set=specifier_sets())
+@SETTINGS
+def test_idempotence(spec_set: SpecifierSet) -> None:
+    r = _to_range(spec_set)
+    assert r.union(r) == r
+    assert r.intersect(r) == r
+
+
+@given(a=specifier_sets(), b=specifier_sets())
+@SETTINGS
+def test_union_commutative(a: SpecifierSet, b: SpecifierSet) -> None:
+    ra, rb = _to_range(a), _to_range(b)
+    assert ra.union(rb) == rb.union(ra)
+
+
+@given(a=specifier_sets(), b=specifier_sets())
+@SETTINGS
+def test_intersect_commutative(a: SpecifierSet, b: SpecifierSet) -> None:
+    ra, rb = _to_range(a), _to_range(b)
+    assert ra.intersect(rb) == rb.intersect(ra)
+
+
+@given(a=specifier_sets(), b=specifier_sets(), c=specifier_sets())
+@SETTINGS
+def test_union_associative(a: SpecifierSet, b: SpecifierSet, c: SpecifierSet) -> None:
+    ra, rb, rc = _to_range(a), _to_range(b), _to_range(c)
+    assert ra.union(rb).union(rc) == ra.union(rb.union(rc))
+
+
+@given(a=specifier_sets(), b=specifier_sets(), c=specifier_sets())
+@SETTINGS
+def test_intersect_associative(
+    a: SpecifierSet, b: SpecifierSet, c: SpecifierSet
+) -> None:
+    ra, rb, rc = _to_range(a), _to_range(b), _to_range(c)
+    assert ra.intersect(rb).intersect(rc) == ra.intersect(rb.intersect(rc))
+
+
+@given(spec_set=specifier_sets())
+@SETTINGS
+def test_double_complement_identity(spec_set: SpecifierSet) -> None:
+    r = _to_range(spec_set)
+    assert r.complement().complement() == r
+
+
+@given(spec_set=specifier_sets())
+@SETTINGS
+def test_complement_partitions(spec_set: SpecifierSet) -> None:
+    r = _to_range(spec_set)
+    c = r.complement()
+    # r and ~r are disjoint and together cover the universe.
+    assert r.intersect(c).is_empty
+    assert r.union(c) == VersionRange.unbounded()
+
+
+@given(a=specifier_sets(), b=specifier_sets())
+@SETTINGS
+def test_de_morgan_intersect(a: SpecifierSet, b: SpecifierSet) -> None:
+    ra, rb = _to_range(a), _to_range(b)
+    assert (ra.intersect(rb)).complement() == ra.complement().union(rb.complement())
+
+
+@given(a=specifier_sets(), b=specifier_sets())
+@SETTINGS
+def test_de_morgan_union(a: SpecifierSet, b: SpecifierSet) -> None:
+    ra, rb = _to_range(a), _to_range(b)
+    assert (ra.union(rb)).complement() == ra.complement().intersect(rb.complement())
+
+
+@given(a=specifier_sets(), b=specifier_sets(), c=specifier_sets())
+@SETTINGS
+def test_intersect_distributes_over_union(
+    a: SpecifierSet, b: SpecifierSet, c: SpecifierSet
+) -> None:
+    ra, rb, rc = _to_range(a), _to_range(b), _to_range(c)
+    lhs = ra.intersect(rb.union(rc))
+    rhs = ra.intersect(rb).union(ra.intersect(rc))
+    assert lhs == rhs
+
+
+@given(a=specifier_sets(), b=specifier_sets(), c=specifier_sets())
+@SETTINGS
+def test_union_distributes_over_intersect(
+    a: SpecifierSet, b: SpecifierSet, c: SpecifierSet
+) -> None:
+    ra, rb, rc = _to_range(a), _to_range(b), _to_range(c)
+    lhs = ra.union(rb.intersect(rc))
+    rhs = ra.union(rb).intersect(ra.union(rc))
+    assert lhs == rhs
+
+
+@given(spec_set=specifier_sets())
+@SETTINGS
+def test_operator_aliases(spec_set: SpecifierSet) -> None:
+    """Operators mirror the named methods.
+
+    Verifies the operator surface stays in lock-step with the
+    underlying methods so callers can use either form interchangeably.
+    """
+    r = _to_range(spec_set)
+    other = _to_range(SpecifierSet(">=1.0,<2.0"))
+    assert (r & other) == r.intersect(other)
+    assert (r | other) == r.union(other)
+    assert (~r) == r.complement()
+
+
+@given(a=specifier_sets(), b=specifier_sets())
+@SETTINGS
+def test_membership_consistent_with_intersect(a: SpecifierSet, b: SpecifierSet) -> None:
+    """``v in (a & b)`` iff ``v in a`` AND ``v in b`` for every version."""
+    ra, rb = _to_range(a), _to_range(b)
+    intersection = ra.intersect(rb)
+    for v in VERSION_POOL:
+        assert (v in intersection) == ((v in ra) and (v in rb))
+
+
+@given(a=specifier_sets(), b=specifier_sets())
+@SETTINGS
+def test_membership_consistent_with_union(a: SpecifierSet, b: SpecifierSet) -> None:
+    """``v in (a | b)`` iff ``v in a`` OR ``v in b`` for every version."""
+    ra, rb = _to_range(a), _to_range(b)
+    union = ra.union(rb)
+    for v in VERSION_POOL:
+        assert (v in union) == ((v in ra) or (v in rb))
+
+
+@given(spec_set=specifier_sets())
+@SETTINGS
+def test_membership_consistent_with_complement(spec_set: SpecifierSet) -> None:
+    """``v in ~r`` iff ``v not in r`` for every version."""
+    r = _to_range(spec_set)
+    c = r.complement()
+    for v in VERSION_POOL:
+        assert (v in c) == (v not in r)
+
+
+@given(spec_set=specifier_sets())
+@SETTINGS
+def test_exact_singleton_membership(spec_set: SpecifierSet) -> None:
+    """``VersionRange.exact(v)`` contains only ``v`` and no other version."""
+    r = _to_range(spec_set)
+    for v in VERSION_POOL:
+        exact = VersionRange.exact(v)
+        assert v in exact
+        # ``v`` is in (r & exact) iff v in r.
+        assert (v in r.intersect(exact)) == (v in r)
+
+
+@given(spec_set=specifier_sets())
+@SETTINGS
+def test_hash_equality_consistency(spec_set: SpecifierSet) -> None:
+    """Equal ranges have equal hashes; usable as dict/set keys."""
+    r1 = _to_range(spec_set)
+    r2 = _to_range(spec_set)
+    assert r1 == r2
+    assert hash(r1) == hash(r2)
+
+
+@given(a=specifier_sets(), b=specifier_sets())
+@SETTINGS
+def test_intersect_subset_of_each(a: SpecifierSet, b: SpecifierSet) -> None:
+    """The intersection is a subset of each input."""
+    ra, rb = _to_range(a), _to_range(b)
+    inter = ra.intersect(rb)
+    for v in VERSION_POOL:
+        if v in inter:
+            assert v in ra
+            assert v in rb
+
+
+@given(a=specifier_sets(), b=specifier_sets())
+@SETTINGS
+def test_union_superset_of_each(a: SpecifierSet, b: SpecifierSet) -> None:
+    """Each input is a subset of the union."""
+    ra, rb = _to_range(a), _to_range(b)
+    u = ra.union(rb)
+    for v in VERSION_POOL:
+        if v in ra or v in rb:
+            assert v in u
+
+
+@given(spec_set=specifier_sets())
+@SETTINGS
+def test_complement_is_empty_iff_unbounded(spec_set: SpecifierSet) -> None:
+    """``~r`` is empty exactly when ``r`` covers everything."""
+    r = _to_range(spec_set)
+    if r.complement().is_empty:
+        assert r == VersionRange.unbounded()
+    if r == VersionRange.unbounded():
+        assert r.complement().is_empty
+
+
+@given(versions=specifier_sets(), v=pep440_versions())
+@SETTINGS
+def test_exact_equals_singleton_intersection(
+    versions: SpecifierSet, v: Version
+) -> None:
+    """``r & exact(v)`` is non-empty iff v is in r — and equals exact(v) when so."""
+    r = _to_range(versions)
+    e = VersionRange.exact(v)
+    inter = r.intersect(e)
+    if v in r:
+        assert inter == e
+    else:
+        assert inter.is_empty

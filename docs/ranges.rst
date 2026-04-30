@@ -38,6 +38,39 @@ Usage
     >>> VersionRange.from_specifier_set(SpecifierSet("===wat")) is None
     True
 
+Set algebra
+-----------
+
+``VersionRange`` is closed under the standard Boolean lattice
+operations.  Each combinator returns a new :class:`VersionRange`
+instance and never mutates its inputs.
+
+.. doctest::
+
+    >>> ge1 = VersionRange.from_specifier(Specifier(">=1.0"))
+    >>> lt2 = VersionRange.from_specifier(Specifier("<2.0"))
+    >>> "1.5" in ge1.intersect(lt2)
+    True
+    >>> # Operator aliases are equivalent to the named methods.
+    >>> ge1.intersect(lt2) == (ge1 & lt2)
+    True
+    >>> # Unions collapse touching or overlapping intervals.
+    >>> a = VersionRange.exact("1.0")
+    >>> b = VersionRange.exact("2.0")
+    >>> "1.0" in a.union(b) and "2.0" in a.union(b)
+    True
+    >>> # Complement inverts the set; ``r.complement().complement() == r``.
+    >>> ge1.complement().complement() == ge1
+    True
+    >>> # Identity factories don't require a SpecifierSet round-trip.
+    >>> VersionRange.empty().is_empty
+    True
+    >>> "1.0" in VersionRange.unbounded()
+    True
+    >>> r3 = VersionRange.exact("3.0")
+    >>> "3.0" in r3 and "3.1" not in r3
+    True
+
 
 .. note::
 

@@ -357,6 +357,47 @@ def _make_below_after_locals(v: Version) -> Callable[[Version], bool]:
     return below
 
 
+def _make_below_after_posts(v: Version) -> Callable[[Version], bool]:
+    """Predicate ``parsed <= AFTER_POSTS(v)`` for an upper bound.
+
+    Mirror of :func:`_make_above_after_posts`: produced only by
+    :meth:`VersionRange.complement` of a range whose lower bound is
+    ``AFTER_POSTS(v)``.  ``parsed`` is at or below the boundary when
+    it is at or below v cmpkey-wise *or* when it is in v's post family
+    (V itself with any local segment, or any V.postN with or without
+    local).
+    """
+    v_ge = v.__ge__
+    v_epoch = v.epoch
+    v_pre = v.pre
+    v_dev = v.dev
+    v_release_trimmed = _trim_release(v.release)
+    n_trimmed = len(v_release_trimmed)
+
+    def below(parsed: Version) -> bool:
+        if v_ge(parsed):
+            return True
+        # parsed > v cmpkey-wise: below the boundary iff in v's post
+        # family.
+        if parsed.epoch != v_epoch:
+            return False
+        parsed_release = parsed.release
+        if len(parsed_release) < n_trimmed:
+            return False
+        if parsed_release[:n_trimmed] != v_release_trimmed:
+            return False
+        for i in range(n_trimmed, len(parsed_release)):
+            if parsed_release[i] != 0:
+                return False
+        if parsed.pre != v_pre:
+            return False
+        # Same dev as v with no post -> parsed sorts <= v already
+        # (handled by v_ge above); reach here only with parsed.post set.
+        return parsed.dev == v_dev or parsed.post is not None
+
+    return below
+
+
 # ---------------------------------------------------------------------------
 # Range bound types
 # ---------------------------------------------------------------------------
@@ -441,11 +482,15 @@ class _UpperBound:
         if version is None:
             self._below: Callable[[Version], bool] | None = None
         elif isinstance(version, _BoundaryVersion):
-            # ``<=v`` / ``==v`` / ``!=v`` (upper side, no local) all
-            # produce an AFTER_LOCALS upper bound; this is the only
-            # boundary kind that ever appears as an upper bound.
-            assert version._kind == _BoundaryKind.AFTER_LOCALS
-            self._below = _make_below_after_locals(version.version)
+            # Standard specifiers only ever produce AFTER_LOCALS upper
+            # bounds (from ``<=v`` / ``==v`` / ``!=v`` with no local).
+            # Complement reverses bound roles, so a range whose lower
+            # bound is ``AFTER_POSTS(v)`` becomes an upper bound after
+            # complementing — both kinds need to be supported.
+            if version._kind == _BoundaryKind.AFTER_LOCALS:
+                self._below = _make_below_after_locals(version.version)
+            else:
+                self._below = _make_below_after_posts(version.version)
         elif inclusive:
             self._below = version.__ge__
         else:
@@ -526,6 +571,101 @@ def _intersect_ranges(
             left_index += 1
         else:
             right_index += 1
+
+    return result
+
+
+def _union_ranges(
+    left: Sequence[_VersionRange],
+    right: Sequence[_VersionRange],
+) -> list[_VersionRange]:
+    """Union two sorted, non-overlapping range lists.
+
+    Linear merge over the two pre-sorted inputs followed by a single
+    coalescing pass: adjacent or overlapping ranges collapse so the
+    result is itself sorted and non-overlapping (the invariant the
+    rest of the module relies on).
+    """
+    if not left:
+        return list(right)
+    if not right:
+        return list(left)
+
+    # Merge two sorted lists by lower bound (linear, no resort).
+    merged_input: list[_VersionRange] = []
+    left_index = right_index = 0
+    while left_index < len(left) and right_index < len(right):
+        if left[left_index][0] <= right[right_index][0]:
+            merged_input.append(left[left_index])
+            left_index += 1
+        else:
+            merged_input.append(right[right_index])
+            right_index += 1
+    merged_input.extend(left[left_index:])
+    merged_input.extend(right[right_index:])
+
+    merged: list[_VersionRange] = [merged_input[0]]
+    for lower, upper in merged_input[1:]:
+        prev_lower, prev_upper = merged[-1]
+
+        # Adjacent ranges merge when the previous upper sits at or
+        # past the new lower; ``+inf``/``-inf`` short-circuits collapse
+        # the unbounded cases.
+        if prev_upper.version is None:
+            overlaps = True
+        elif lower.version is None:
+            overlaps = True  # pragma: no cover -- merged_input is sorted by lower
+        elif prev_upper.version > lower.version:
+            overlaps = True
+        elif prev_upper.version == lower.version:
+            overlaps = prev_upper.inclusive or lower.inclusive
+        else:
+            overlaps = False
+
+        if overlaps:
+            new_upper = max(prev_upper, upper)
+            merged[-1] = (prev_lower, new_upper)
+        else:
+            merged.append((lower, upper))
+
+    return merged
+
+
+def _complement_ranges(
+    ranges: Sequence[_VersionRange],
+) -> list[_VersionRange]:
+    """Complement a sorted, non-overlapping range list.
+
+    Yields the gaps between ranges, plus a leading gap before the first
+    range and a trailing gap after the last.  Bound inclusivity flips
+    so the complement-of-complement round-trips back to the input.
+    """
+    if not ranges:
+        return list(_FULL_RANGE)
+
+    result: list[_VersionRange] = []
+    prev_upper: _UpperBound | None = None
+
+    for lower, upper in ranges:
+        if prev_upper is None:
+            # Leading gap from -inf up to the first range's lower.
+            if lower.version is not None:
+                gap_upper = _UpperBound(lower.version, not lower.inclusive)
+                result.append((_NEG_INF, gap_upper))
+        else:
+            gap_lower = _LowerBound(prev_upper.version, not prev_upper.inclusive)
+            gap_upper = _UpperBound(lower.version, not lower.inclusive)
+            # Adjacent ranges in the input are non-touching by
+            # construction, so the gap between them is non-empty; the
+            # check is a defensive guard.
+            if not _range_is_empty(gap_lower, gap_upper):  # pragma: no branch
+                result.append((gap_lower, gap_upper))
+        prev_upper = upper
+
+    # Trailing gap from the final range's upper to +inf.
+    if prev_upper is not None and prev_upper.version is not None:
+        gap_lower = _LowerBound(prev_upper.version, not prev_upper.inclusive)
+        result.append((gap_lower, _POS_INF))
 
     return result
 
@@ -879,6 +1019,58 @@ class VersionRange:
         instance._bounds = bounds
         return instance
 
+    @classmethod
+    def empty(cls) -> VersionRange:
+        """Return the empty range — no version satisfies it.
+
+        Useful as the identity element when folding a sequence of
+        ranges with :meth:`union`.
+
+        >>> VersionRange.empty().is_empty
+        True
+        >>> "1.0" in VersionRange.empty()
+        False
+        """
+        return cls._build(())
+
+    @classmethod
+    def unbounded(cls) -> VersionRange:
+        """Return the unbounded range — every PEP 440 version satisfies it.
+
+        Equivalent to :meth:`from_specifier_set` on an empty
+        :class:`SpecifierSet`, but produced without parsing.  Useful as
+        the identity element when folding a sequence of ranges with
+        :meth:`intersect`.
+
+        >>> "1.0" in VersionRange.unbounded()
+        True
+        >>> VersionRange.unbounded().is_empty
+        False
+        """
+        return cls._build(_FULL_RANGE)
+
+    @classmethod
+    def exact(cls, version: Version | str) -> VersionRange:
+        """Return the range that contains only *version*.
+
+        *version* may be a :class:`~packaging.version.Version` or a
+        string parseable as one.
+
+        >>> r = VersionRange.exact("1.2.3")
+        >>> "1.2.3" in r
+        True
+        >>> "1.2.4" in r
+        False
+
+        :raises packaging.version.InvalidVersion: if *version* is a
+            string that does not parse as a PEP 440 version.
+        """
+        if not isinstance(version, Version):
+            version = Version(version)
+        lower = _LowerBound(version, True)
+        upper = _UpperBound(version, True)
+        return cls._build(((lower, upper),))
+
     def intersect(self, other: VersionRange) -> VersionRange:
         """Range containing exactly the versions in both *self* and *other*.
 
@@ -889,6 +1081,73 @@ class VersionRange:
         True
         """
         return self._build(tuple(_intersect_ranges(self._bounds, other._bounds)))
+
+    def union(self, other: VersionRange) -> VersionRange:
+        """Range containing every version in *self* or *other*.
+
+        Adjacent or overlapping intervals collapse so the result keeps
+        the same sorted, non-overlapping invariant the rest of the
+        module relies on.
+
+        >>> a = VersionRange.exact("1.0")
+        >>> b = VersionRange.exact("2.0")
+        >>> "1.0" in a.union(b)
+        True
+        >>> "2.0" in a.union(b)
+        True
+        >>> "1.5" in a.union(b)
+        False
+        """
+        return self._build(tuple(_union_ranges(self._bounds, other._bounds)))
+
+    def complement(self) -> VersionRange:
+        """Range containing every version *not* in *self*.
+
+        Inverts a range so that ``r.complement().complement() == r``.
+        The complement of the unbounded range is empty, and vice versa.
+
+        >>> r = VersionRange.from_specifier(Specifier(">=1.0"))
+        >>> "0.5" in r.complement()
+        True
+        >>> "1.5" in r.complement()
+        False
+        >>> r.complement().complement() == r
+        True
+        """
+        return self._build(tuple(_complement_ranges(self._bounds)))
+
+    def __and__(self, other: object) -> VersionRange:
+        """Operator alias for :meth:`intersect`.
+
+        >>> a = VersionRange.from_specifier(Specifier(">=1.0"))
+        >>> b = VersionRange.from_specifier(Specifier("<2.0"))
+        >>> "1.5" in (a & b)
+        True
+        """
+        if not isinstance(other, VersionRange):
+            return NotImplemented
+        return self.intersect(other)
+
+    def __or__(self, other: object) -> VersionRange:
+        """Operator alias for :meth:`union`.
+
+        >>> a = VersionRange.exact("1.0")
+        >>> b = VersionRange.exact("2.0")
+        >>> "1.0" in (a | b) and "2.0" in (a | b)
+        True
+        """
+        if not isinstance(other, VersionRange):
+            return NotImplemented
+        return self.union(other)
+
+    def __invert__(self) -> VersionRange:
+        """Operator alias for :meth:`complement`.
+
+        >>> r = VersionRange.from_specifier(Specifier(">=1.0"))
+        >>> "0.5" in ~r
+        True
+        """
+        return self.complement()
 
     def filter(
         self,

@@ -464,3 +464,422 @@ class TestDoctests:
         assert (
             bool(VersionRange.from_specifier_set(SpecifierSet(">=2.0,<1.0"))) is False
         )
+
+
+class TestEmptyFactory:
+    """``VersionRange.empty`` builds the additive identity for union."""
+
+    def test_returns_empty_range(self) -> None:
+        r = VersionRange.empty()
+        assert isinstance(r, VersionRange)
+        assert r.is_empty
+        assert not bool(r)
+
+    def test_contains_nothing(self) -> None:
+        r = VersionRange.empty()
+        assert "1.0" not in r
+        assert Version("1.0") not in r
+        assert "0" not in r
+
+    def test_intersect_with_empty_is_empty(self) -> None:
+        any_r = VersionRange.unbounded()
+        e = VersionRange.empty()
+        assert any_r.intersect(e).is_empty
+        assert e.intersect(any_r).is_empty
+
+    def test_union_with_empty_is_self(self) -> None:
+        a = VersionRange.from_specifier(Specifier(">=1.0"))
+        assert a is not None
+        e = VersionRange.empty()
+        assert a.union(e) == a
+        assert e.union(a) == a
+
+    def test_complement_of_empty_is_unbounded(self) -> None:
+        assert VersionRange.empty().complement() == VersionRange.unbounded()
+
+    def test_equal_across_constructions(self) -> None:
+        a = VersionRange.empty()
+        b = VersionRange.from_specifier_set(SpecifierSet(">=2,<1"))
+        assert b is not None
+        assert a == b
+        assert hash(a) == hash(b)
+
+
+class TestUnboundedFactory:
+    """``VersionRange.unbounded`` builds the multiplicative identity for intersect."""
+
+    def test_returns_full_range(self) -> None:
+        r = VersionRange.unbounded()
+        assert isinstance(r, VersionRange)
+        assert not r.is_empty
+        assert bool(r)
+
+    def test_contains_anything_parseable(self) -> None:
+        r = VersionRange.unbounded()
+        assert "0" in r
+        assert "999.999.999" in r
+        assert "1.0a1" in r
+        assert "not-a-version" not in r
+
+    def test_intersect_with_unbounded_is_self(self) -> None:
+        a = VersionRange.from_specifier_set(SpecifierSet(">=1.0,<2.0"))
+        assert a is not None
+        u = VersionRange.unbounded()
+        assert a.intersect(u) == a
+        assert u.intersect(a) == a
+
+    def test_union_with_unbounded_is_unbounded(self) -> None:
+        a = VersionRange.from_specifier(Specifier(">=1.0"))
+        assert a is not None
+        u = VersionRange.unbounded()
+        assert a.union(u) == u
+        assert u.union(a) == u
+
+    def test_complement_of_unbounded_is_empty(self) -> None:
+        assert VersionRange.unbounded().complement().is_empty
+
+    def test_equal_to_empty_specifier_set(self) -> None:
+        assert VersionRange.unbounded() == VersionRange.from_specifier_set(
+            SpecifierSet("")
+        )
+
+
+class TestExactFactory:
+    """``VersionRange.exact`` builds the singleton range."""
+
+    def test_from_string(self) -> None:
+        r = VersionRange.exact("1.2.3")
+        assert "1.2.3" in r
+        assert "1.2.4" not in r
+        assert "1.2.2" not in r
+
+    def test_from_version_object(self) -> None:
+        r = VersionRange.exact(Version("1.2.3"))
+        assert "1.2.3" in r
+        assert "1.2.4" not in r
+
+    def test_invalid_string_raises(self) -> None:
+        from packaging.version import InvalidVersion  # noqa: PLC0415
+
+        with pytest.raises(InvalidVersion):
+            VersionRange.exact("not-a-version")
+
+    def test_equal_to_eq_specifier(self) -> None:
+        # ``==1.2.3`` matches ``1.2.3`` and ``1.2.3+local``; ``exact``
+        # is the strict singleton — not the same range.
+        exact = VersionRange.exact("1.2.3")
+        eq_spec = VersionRange.from_specifier(Specifier("==1.2.3"))
+        assert eq_spec is not None
+        assert "1.2.3+local" in eq_spec
+        assert "1.2.3+local" not in exact
+
+    def test_intersect_disjoint_exacts_is_empty(self) -> None:
+        a = VersionRange.exact("1.0")
+        b = VersionRange.exact("2.0")
+        assert a.intersect(b).is_empty
+
+    def test_intersect_equal_exacts_is_self(self) -> None:
+        a = VersionRange.exact("1.0")
+        b = VersionRange.exact("1.0")
+        assert a.intersect(b) == a
+
+    def test_hashable(self) -> None:
+        a = VersionRange.exact("1.0")
+        b = VersionRange.exact("1.0")
+        assert hash(a) == hash(b)
+        assert len({a, b, VersionRange.exact("2.0")}) == 2
+
+
+class TestUnion:
+    def test_disjoint_exacts(self) -> None:
+        a = VersionRange.exact("1.0")
+        b = VersionRange.exact("2.0")
+        u = a.union(b)
+        assert "1.0" in u
+        assert "2.0" in u
+        assert "1.5" not in u
+
+    def test_overlapping_intervals_collapse(self) -> None:
+        a = VersionRange.from_specifier_set(SpecifierSet(">=1.0,<2.0"))
+        b = VersionRange.from_specifier_set(SpecifierSet(">=1.5,<3.0"))
+        assert a is not None
+        assert b is not None
+        u = a.union(b)
+        assert "1.0" in u
+        assert "2.5" in u
+        assert "3.0" not in u
+        assert "0.5" not in u
+
+    def test_union_with_self_is_self(self) -> None:
+        a = VersionRange.from_specifier(Specifier(">=1.0"))
+        assert a is not None
+        assert a.union(a) == a
+
+    def test_union_is_commutative(self) -> None:
+        a = VersionRange.from_specifier_set(SpecifierSet(">=1.0,<2.0"))
+        b = VersionRange.from_specifier_set(SpecifierSet(">=3.0,<4.0"))
+        assert a is not None
+        assert b is not None
+        assert a.union(b) == b.union(a)
+
+    def test_union_is_associative(self) -> None:
+        a = VersionRange.exact("1.0")
+        b = VersionRange.exact("2.0")
+        c = VersionRange.exact("3.0")
+        assert a.union(b).union(c) == a.union(b.union(c))
+
+    def test_union_of_neg_complementary_ranges_covers_all(self) -> None:
+        # ``<1.0`` and ``>=1.0`` partition the version line.
+        lower = VersionRange.from_specifier(Specifier("<1.0"))
+        upper = VersionRange.from_specifier(Specifier(">=1.0"))
+        assert lower is not None
+        assert upper is not None
+        u = lower.union(upper)
+        assert "0.5" in u
+        assert "1.0" in u
+        assert "999" in u
+
+    def test_union_preserves_disjoint_repr_count(self) -> None:
+        # Two non-adjacent ranges keep both intervals.
+        a = VersionRange.exact("1.0")
+        b = VersionRange.exact("3.0")
+        u = a.union(b)
+        assert " | " in repr(u)
+
+    def test_union_of_two_unbounded_lower_collapses(self) -> None:
+        # ``<2`` already covers ``<1``; the union is just ``<2``.
+        a = VersionRange.from_specifier(Specifier("<1"))
+        b = VersionRange.from_specifier(Specifier("<2"))
+        assert a is not None
+        assert b is not None
+        assert a.union(b) == b
+
+    def test_union_of_two_unbounded_upper_collapses(self) -> None:
+        a = VersionRange.from_specifier(Specifier(">=1"))
+        b = VersionRange.from_specifier(Specifier(">=2"))
+        assert a is not None
+        assert b is not None
+        assert a.union(b) == a
+
+    def test_touching_inclusive_exclusive_collapses(self) -> None:
+        # ``[1.0, 2.0)`` U ``[2.0, 3.0)`` == ``[1.0, 3.0)``.
+        a = VersionRange.from_specifier_set(SpecifierSet(">=1.0,<2.0"))
+        b = VersionRange.from_specifier_set(SpecifierSet(">=2.0,<3.0"))
+        assert a is not None
+        assert b is not None
+        u = a.union(b)
+        assert "1.5" in u
+        assert "2.0" in u
+        assert "2.999" in u
+        assert "3.0" not in u
+
+    def test_touching_exclusive_exclusive_does_not_collapse(self) -> None:
+        # ``[1.0, 2.0)`` U ``(2.0, 3.0)`` excludes ``2.0`` itself.
+        a = VersionRange.from_specifier_set(SpecifierSet(">=1.0,<2.0"))
+        b = VersionRange.from_specifier_set(SpecifierSet(">2.0,<3.0"))
+        assert a is not None
+        assert b is not None
+        u = a.union(b)
+        assert "2.0" not in u
+        assert "1.5" in u
+        assert "2.5" in u
+
+
+class TestComplement:
+    def test_complement_of_unbounded(self) -> None:
+        assert VersionRange.unbounded().complement().is_empty
+
+    def test_complement_of_empty(self) -> None:
+        assert VersionRange.empty().complement() == VersionRange.unbounded()
+
+    def test_double_complement_is_identity(self) -> None:
+        for spec_str in [">=1.0", "<2.0", ">=1.0,<2.0", "!=1.5", "==1.0", ">1.0,<=2.0"]:
+            r = VersionRange.from_specifier_set(SpecifierSet(spec_str))
+            assert r is not None
+            assert r.complement().complement() == r
+
+    def test_union_with_complement_is_unbounded(self) -> None:
+        for spec in [">=1.0", "<2.0", ">=1.0,<2.0", "!=1.5"]:
+            r = VersionRange.from_specifier_set(SpecifierSet(spec))
+            assert r is not None
+            assert r.union(r.complement()) == VersionRange.unbounded()
+
+    def test_intersect_with_complement_is_empty(self) -> None:
+        for spec in [">=1.0", "<2.0", ">=1.0,<2.0", "!=1.5"]:
+            r = VersionRange.from_specifier_set(SpecifierSet(spec))
+            assert r is not None
+            assert r.intersect(r.complement()).is_empty
+
+    def test_complement_of_lower_bound(self) -> None:
+        r = VersionRange.from_specifier(Specifier(">=2.0"))
+        assert r is not None
+        c = r.complement()
+        assert "1.0" in c
+        assert "2.0" not in c
+        assert "3.0" not in c
+
+    def test_complement_of_upper_bound(self) -> None:
+        r = VersionRange.from_specifier(Specifier("<2.0"))
+        assert r is not None
+        c = r.complement()
+        assert "1.0" not in c
+        assert "2.0" in c
+        assert "3.0" in c
+
+    def test_complement_of_disjoint_ranges(self) -> None:
+        # Complement of a !=V range is the {V} singleton.
+        r = VersionRange.from_specifier(Specifier("!=1.5"))
+        assert r is not None
+        c = r.complement()
+        assert "1.5" in c
+        assert "1.4" not in c
+        assert "1.6" not in c
+
+    def test_complement_creates_after_posts_upper_bound(self) -> None:
+        # ``>1.0,<=2.0`` has an AFTER_POSTS lower bound; complementing
+        # moves it to an upper bound, exercising :func:`_make_below_after_posts`.
+        # The leading interval ``(-inf, AFTER_POSTS(1.0)]`` is what hits
+        # the new predicate; pick versions whose membership in that
+        # interval is determined by the post-family check rather than
+        # by a fall-through to the second interval.
+        r = VersionRange.from_specifier_set(SpecifierSet(">1.0,<=2.0"))
+        assert r is not None
+        c = r.complement()
+        # 1.0 itself: at v cmpkey-wise, below the boundary.
+        assert "1.0" in c
+        # 1.0+local: in v's local family, below v cmpkey-wise.
+        assert "1.0+local" in c
+        # 1.0.post0: in v's post family, above v cmpkey-wise — only
+        # the leading interval can include this (cmpkey < 2.0).
+        assert "1.0.post0" in c
+        # 1.0.post5+local: in v's post family with a local segment.
+        assert "1.0.post5+local" in c
+        # 1.5: above the AFTER_POSTS upper bound, in original range.
+        assert "1.5" not in c
+        # Shorter release than v's trimmed: parsed_release shorter path.
+        # ``>1.0.0.5`` produces v=1.0.0.5.  ``1`` is below v cmpkey-wise
+        # so v_ge handles it; ``1.0.0`` is also below v cmpkey-wise.
+        # The shorter-release path fires when parsed > v cmpkey but
+        # release is shorter than n_trimmed; that requires a release
+        # like ``2`` after the upper bound includes 1.0.0.5.  Use a
+        # different fixture: an isolated complement whose only interval
+        # is the AFTER_POSTS one.
+        r2 = VersionRange.from_specifier_set(SpecifierSet(">1.0.0.5"))
+        assert r2 is not None
+        c2 = r2.complement()  # (-inf, AFTER_POSTS(1.0.0.5)]
+        assert "1.0.0.5" in c2  # at v
+        assert "1.0.0.5.post0" in c2  # in post family
+        # ``2`` has release=(2,), shorter than v's trimmed (1,0,0,5);
+        # not in family, above v cmpkey-wise.
+        assert "2" not in c2
+        # ``1.0.0.6`` has same length but different prefix.
+        assert "1.0.0.6" not in c2
+        # Tail-zero release that DOES match the family.
+        r3 = VersionRange.from_specifier_set(SpecifierSet(">1.0"))
+        assert r3 is not None
+        c3 = r3.complement()  # (-inf, AFTER_POSTS(1.0)]
+        # ``1.0.0`` parses with release=(1,0,0); v=1.0 trims to (1,);
+        # extra components are zero, so in family.
+        assert "1.0.0" in c3
+        assert "1.0.0.post0" in c3
+        # Different release tail with non-zero component.
+        assert "1.0.1" not in c3
+        # Different pre-release.
+        # ``>1.0a1`` is the only spec form that gives v with a pre.
+        # Build a complement covering parsed.pre != v_pre.
+        r4 = VersionRange.from_specifier_set(SpecifierSet(">1.0a1"))
+        assert r4 is not None
+        c4 = r4.complement()  # (-inf, AFTER_POSTS(1.0a1)]
+        # ``1.0a2`` is above v_a1 cmpkey-wise but has a different pre.
+        assert "1.0a2" not in c4
+        # Different epoch: parsed.epoch != v_epoch path.  ``2!1.0`` has
+        # cmpkey > v=1.0, so v_ge is False; epoch differs, so the
+        # boundary check returns False (not in family).
+        assert "2!1.0" not in c3
+
+
+class TestOperatorAliases:
+    def test_and_aliases_intersect(self) -> None:
+        a = VersionRange.from_specifier(Specifier(">=1.0"))
+        b = VersionRange.from_specifier(Specifier("<2.0"))
+        assert a is not None
+        assert b is not None
+        assert (a & b) == a.intersect(b)
+
+    def test_or_aliases_union(self) -> None:
+        a = VersionRange.exact("1.0")
+        b = VersionRange.exact("2.0")
+        assert (a | b) == a.union(b)
+
+    def test_invert_aliases_complement(self) -> None:
+        r = VersionRange.from_specifier(Specifier(">=1.0"))
+        assert r is not None
+        assert (~r) == r.complement()
+
+    def test_and_with_non_range_returns_notimplemented(self) -> None:
+        a = VersionRange.from_specifier(Specifier(">=1.0"))
+        assert a is not None
+        with pytest.raises(TypeError):
+            a & "not a range"  # type: ignore[operator]
+        with pytest.raises(TypeError):
+            a & 42  # type: ignore[operator]
+
+    def test_or_with_non_range_returns_notimplemented(self) -> None:
+        a = VersionRange.from_specifier(Specifier(">=1.0"))
+        assert a is not None
+        with pytest.raises(TypeError):
+            a | "not a range"  # type: ignore[operator]
+        with pytest.raises(TypeError):
+            a | 42  # type: ignore[operator]
+
+    def test_chained_operations(self) -> None:
+        # ``(>=1) & (<2) | (==3)``
+        ge1 = VersionRange.from_specifier(Specifier(">=1.0"))
+        lt2 = VersionRange.from_specifier(Specifier("<2.0"))
+        eq3 = VersionRange.exact("3.0")
+        assert ge1 is not None
+        assert lt2 is not None
+        result = (ge1 & lt2) | eq3
+        assert "1.5" in result
+        assert "3.0" in result
+        assert "2.5" not in result
+
+
+class TestSetAlgebra:
+    """De Morgan and basic set-theoretic identities."""
+
+    def test_de_morgan_intersect(self) -> None:
+        # ~(A & B) == ~A U ~B
+        a = VersionRange.from_specifier(Specifier(">=1.0"))
+        b = VersionRange.from_specifier(Specifier("<2.0"))
+        assert a is not None
+        assert b is not None
+        assert ~(a & b) == (~a) | (~b)
+
+    def test_de_morgan_union(self) -> None:
+        # ~(A U B) == ~A & ~B
+        a = VersionRange.from_specifier_set(SpecifierSet(">=1.0,<2.0"))
+        b = VersionRange.from_specifier_set(SpecifierSet(">=3.0,<4.0"))
+        assert a is not None
+        assert b is not None
+        assert ~(a | b) == (~a) & (~b)
+
+    def test_distributivity_intersect_over_union(self) -> None:
+        # A & (B U C) == (A & B) U (A & C)
+        a = VersionRange.from_specifier_set(SpecifierSet(">=1.0,<5.0"))
+        b = VersionRange.from_specifier_set(SpecifierSet(">=2.0,<3.0"))
+        c = VersionRange.from_specifier_set(SpecifierSet(">=4.0,<5.0"))
+        assert a is not None
+        assert b is not None
+        assert c is not None
+        assert a & (b | c) == (a & b) | (a & c)
+
+    def test_distributivity_union_over_intersect(self) -> None:
+        # A U (B & C) == (A U B) & (A U C)
+        a = VersionRange.from_specifier_set(SpecifierSet(">=10.0"))
+        b = VersionRange.from_specifier_set(SpecifierSet(">=1.0,<3.0"))
+        c = VersionRange.from_specifier_set(SpecifierSet(">=2.0,<4.0"))
+        assert a is not None
+        assert b is not None
+        assert c is not None
+        assert a | (b & c) == (a | b) & (a | c)
