@@ -974,6 +974,211 @@ def _restore_version_range(
 
 
 # ---------------------------------------------------------------------------
+# VersionRange -> SpecifierSet conversion helpers
+# ---------------------------------------------------------------------------
+#
+# Going the other way -- from a :class:`VersionRange` back to a
+# :class:`packaging.specifiers.SpecifierSet` -- is *partial*.  Not every
+# range has a SpecifierSet form.  Concretely:
+#
+# * PEP 440 ``<V`` excludes pre-releases of V, so the mathematical
+#   complement of ``>=V`` (which includes those pre-releases) has no
+#   single specifier.
+# * PEP 440 ``==V`` matches ``V+local`` too, so the strict singleton
+#   ``[V, V]`` produced by :meth:`VersionRange.singleton` has no
+#   single specifier when V has no local segment.
+# * Disjoint unions whose gap is not a complete ``==V.*`` family or a
+#   ``==V`` family cannot be expressed as ``base & !=...`` chains.
+#
+# The helpers below classify each bound by its specifier shape and
+# build the encoding incrementally; an unsupported shape collapses
+# the whole conversion to ``None``.
+
+
+def _is_dev0_version(v: Version) -> bool:
+    """``True`` when *v* is exactly ``X[.Y]*.dev0`` -- the form ``<X``
+    produces as its upper bound."""
+    return v.dev == 0 and v.pre is None and v.post is None and v.local is None
+
+
+def _encode_lower(lower: _LowerBound) -> list[str] | _NotEncodable:
+    """Encode a lower bound as a list of specifier fragments.
+
+    Returns:
+      * ``[]`` -- bound is ``-inf``; no fragment needed.
+      * ``[fragment, ...]`` -- one or more specifier fragments.  Most
+        bounds emit a single fragment; ``AFTER_LOCALS(V)`` lower bounds
+        require two (``>=V`` plus ``!=V``) since the boundary excludes
+        ``V`` and every ``V+local`` but no single ordered specifier
+        does that.
+      * :data:`_NOT_ENCODABLE` -- this bound shape has no specifier
+        representation in PEP 440.
+
+    The latter case includes ``V (excl)`` lower (a "strictly above V"
+    lower that no operator produces) and ``AFTER_POSTS(V) (incl)``
+    lower (arises from complementing ``>V``).
+    """
+    v = lower.version
+    if v is None:
+        return []
+    if isinstance(v, _BoundaryVersion):
+        if v._kind == _BoundaryKind.AFTER_POSTS and not lower.inclusive:
+            return [f">{v.version}"]
+        if v._kind == _BoundaryKind.AFTER_LOCALS:
+            # Strictly above V's local family.  Express as ``>=V,!=V``:
+            # ``>=V`` produces ``[V, +inf)``; intersecting with ``!=V``
+            # subtracts ``[V, AFTER_LOCALS(V)]``, leaving exactly
+            # ``(AFTER_LOCALS(V), +inf)``.  The boundary's inclusivity
+            # does not matter at the real-version level (no real
+            # version sits on the synthetic boundary).
+            return [f">={v.version}", f"!={v.version}"]
+        # AFTER_POSTS lower with inclusive=True is unreachable from
+        # any specifier or set-algebra operation; defensive guard.
+        return _NOT_ENCODABLE  # pragma: no cover
+    if lower.inclusive:
+        return [f">={v}"]
+    return _NOT_ENCODABLE
+
+
+def _encode_upper(upper: _UpperBound) -> list[str] | _NotEncodable:
+    """Encode an upper bound as a list of specifier fragments.
+
+    Returns ``[]`` for ``+inf``, a list of fragments otherwise, or
+    :data:`_NOT_ENCODABLE` when the bound has no specifier form.
+    """
+    v = upper.version
+    if v is None:
+        return []
+    if isinstance(v, _BoundaryVersion):
+        if v._kind == _BoundaryKind.AFTER_LOCALS and upper.inclusive:
+            return [f"<={v.version}"]
+        return _NOT_ENCODABLE
+    if not upper.inclusive:
+        if _is_dev0_version(v):
+            # ``<V`` produces upper = V.dev0 (excl); strip the
+            # synthetic dev0 to recover the original V.
+            return [f"<{v.__replace__(dev=None)}"]
+        # ``V (excl)`` upper -- "strictly less than V cmpkey-wise,
+        # including V's pre-releases".  Expressible as ``<=V,!=V``:
+        # ``<=V`` = ``(-inf, AFTER_LOCALS(V)]``; intersecting with
+        # ``!=V`` removes ``[V, AFTER_LOCALS(V)]``, leaving exactly
+        # ``(-inf, V (excl))``.
+        return [f"<={v}", f"!={v}"]
+    return _NOT_ENCODABLE
+
+
+class _NotEncodable:
+    """Sentinel for "this bound has no PEP 440 specifier representation"."""
+
+    __slots__ = ()
+
+
+_NOT_ENCODABLE: Final = _NotEncodable()
+
+
+def _encode_interval(
+    lower: _LowerBound,
+    upper: _UpperBound,
+) -> list[str] | None:
+    """Encode one interval as a list of specifier fragments, or ``None``.
+
+    Includes the special case ``[V, V]`` (singleton interval, both
+    bounds the same plain Version inclusive) when V carries a local
+    segment.  PEP 440's ``==V+local`` matches only the literal
+    ``V+local``, so ``[V+local, V+local]`` is exactly that specifier.
+    Without a local, the singleton interval has no specifier form
+    (``==V`` is wider since it also matches ``V+local``).
+    """
+    if (
+        lower.version is not None
+        and upper.version is not None
+        and not isinstance(lower.version, _BoundaryVersion)
+        and not isinstance(upper.version, _BoundaryVersion)
+        and lower.inclusive
+        and upper.inclusive
+        and lower.version == upper.version
+        and lower.version.local is not None
+    ):
+        return [f"=={lower.version}"]
+    lo = _encode_lower(lower)
+    if isinstance(lo, _NotEncodable):
+        return None
+    up = _encode_upper(upper)
+    if isinstance(up, _NotEncodable):
+        return None
+    return lo + up
+
+
+def _detect_ne_v(
+    left_upper: _UpperBound,
+    right_lower: _LowerBound,
+) -> Version | None:
+    """If ``[..., V (excl)] [AFTER_LOCALS(V) (excl), ...]`` matches, return V.
+
+    This is the gap shape the ``!=V`` specifier produces when intersected
+    with surrounding bounds.  It is the only ``!=V`` pattern that can
+    appear inside a multi-interval range.
+    """
+    if isinstance(left_upper.version, _BoundaryVersion):
+        return None
+    if left_upper.version is None or left_upper.inclusive:
+        return None
+    if not isinstance(right_lower.version, _BoundaryVersion):
+        return None
+    if right_lower.version._kind != _BoundaryKind.AFTER_LOCALS:
+        return None
+    if right_lower.inclusive:
+        # AFTER_LOCALS lower with inclusive=True does not arise from
+        # any specifier or set-algebra operation; defensive guard.
+        return None  # pragma: no cover
+    if right_lower.version.version != left_upper.version:
+        # The ``!=V`` pattern is contiguous: when bounds match the
+        # shape but the V's differ, multi-interval input came from a
+        # union of unrelated ranges.  Defensive.
+        return None  # pragma: no cover
+    return left_upper.version
+
+
+def _detect_ne_v_star(
+    left_upper: _UpperBound,
+    right_lower: _LowerBound,
+) -> Version | None:
+    """If ``[..., V.dev0 (excl)] [V_next.dev0 (incl), ...]`` matches, return V.
+
+    This is the gap shape ``!=V.*`` produces.  ``V`` and ``V_next``
+    must share an epoch and a release prefix that differs only in the
+    final component being incremented by one.  Returns the prefix
+    version (without the synthetic ``.dev0``) so the caller can write
+    ``!=V.*``.
+    """
+    lu = left_upper.version
+    rl = right_lower.version
+    if isinstance(lu, _BoundaryVersion) or isinstance(rl, _BoundaryVersion):
+        return None
+    if lu is None or rl is None:
+        # First-interval upper or last-interval lower at infinity --
+        # such an interval is the universe and no second interval
+        # would exist; defensive.
+        return None  # pragma: no cover
+    if left_upper.inclusive or not right_lower.inclusive:
+        return None
+    if not (_is_dev0_version(lu) and _is_dev0_version(rl)):
+        return None
+    if lu.epoch != rl.epoch:
+        return None
+    left_release = lu.release
+    right_release = rl.release
+    if len(left_release) != len(right_release) or not left_release:
+        return None
+    # All components except the last must match; the last increments by 1.
+    if left_release[:-1] != right_release[:-1]:
+        return None
+    if right_release[-1] != left_release[-1] + 1:
+        return None
+    return lu.__replace__(dev=None)
+
+
+# ---------------------------------------------------------------------------
 # VersionRange
 # ---------------------------------------------------------------------------
 
@@ -1279,6 +1484,145 @@ class VersionRange:
             assert result is not None  # ``_specs`` is non-empty above.
         specifier_set._range_cache = result
         return result
+
+    def to_specifier_set(self) -> SpecifierSet | None:
+        """Return a single :class:`~packaging.specifiers.SpecifierSet` ``S``
+        such that :meth:`from_specifier_set` on ``S`` yields *self*, or
+        ``None`` if no such ``S`` exists.
+
+        :class:`SpecifierSet` is **not** closed under :meth:`union` or
+        :meth:`complement`: PEP 440 has no specifier for, e.g., the
+        strict singleton ``{V}`` (``==V`` also matches ``V+local``) or
+        the inclusive ``AFTER_POSTS(V)`` upper bound that arises from
+        complementing ``>V``.  The conversion therefore returns
+        ``None`` whenever the range has a bound shape no specifier can
+        express or an interval gap that is not a complete ``==V.*`` or
+        ``==V`` family.
+
+        The empty range maps to ``SpecifierSet("<0")``: ``<0`` parses
+        with upper bound ``0.dev0`` exclusive, and ``0.dev0`` is the
+        smallest possible PEP 440 version, so the resulting range
+        contains nothing.  The full range maps to ``SpecifierSet("")``.
+
+        Use :meth:`to_specifier_sets` when a union of specifier sets
+        is acceptable.
+
+        >>> r = VersionRange.from_specifier_set(SpecifierSet(">=1.0,<2.0"))
+        >>> str(r.to_specifier_set())
+        '<2.0,>=1.0'
+        >>> VersionRange.full().to_specifier_set() == SpecifierSet("")
+        True
+        >>> VersionRange.empty().to_specifier_set() == SpecifierSet("<0")
+        True
+        >>> # The strict singleton {V} is not specifier-expressible
+        >>> # because ``==V`` matches V+local too.
+        >>> VersionRange.singleton("1.5").to_specifier_set() is None
+        True
+        >>> # Complement of ``>V`` produces an inclusive AFTER_POSTS
+        >>> # upper bound that no specifier captures.
+        >>> gt1 = VersionRange.from_specifier(Specifier(">1.0"))
+        >>> gt1.complement().to_specifier_set() is None
+        True
+        """
+        # Avoid an import cycle at module load: SpecifierSet is the
+        # parent of every specifier we need to construct, but it lives
+        # in :mod:`packaging.specifiers` which already imports from
+        # :mod:`packaging.ranges`.
+        from .specifiers import SpecifierSet  # noqa: PLC0415
+
+        if self.is_empty:
+            # ``<0`` parses to upper = 0.dev0 (excl); 0.dev0 is the
+            # smallest possible PEP 440 version, so the range contains
+            # no version.  This is the canonical "empty" SpecifierSet.
+            return SpecifierSet("<0")
+        # Full range round-trips through the empty SpecifierSet.
+        if self._bounds == _FULL_RANGE:
+            return SpecifierSet("")
+
+        # Walk left-to-right, merging adjacent intervals whose gap is a
+        # ``!=V`` or ``!=V.*`` exclusion.  The merged outer bounds plus
+        # the chain of ``!=`` fragments form a single SpecifierSet.
+        bounds = list(self._bounds)
+        outer_lower = bounds[0][0]
+        outer_upper = bounds[0][1]
+        exclusions: list[str] = []
+        for next_lower, next_upper in bounds[1:]:
+            ne_v = _detect_ne_v(outer_upper, next_lower)
+            ne_v_star = _detect_ne_v_star(outer_upper, next_lower)
+            if ne_v is not None:
+                exclusions.append(f"!={ne_v}")
+            elif ne_v_star is not None:
+                exclusions.append(f"!={ne_v_star}.*")
+            else:
+                return None
+            outer_upper = next_upper
+
+        outer_parts = _encode_interval(outer_lower, outer_upper)
+        if outer_parts is None:
+            return None
+        return SpecifierSet(",".join(outer_parts + exclusions))
+
+    def to_specifier_sets(self) -> tuple[SpecifierSet, ...] | None:
+        """Return a tuple ``T`` of :class:`SpecifierSet` such that the
+        union of ``from_specifier_set(s) for s in T`` equals *self*, or
+        ``None`` if no such tuple exists.
+
+        Strictly more permissive than :meth:`to_specifier_set`: when
+        the whole range fits in a single SpecifierSet (including the
+        ``!=V`` and ``!=V.*`` multi-interval patterns) the result is a
+        one-tuple of that SpecifierSet; otherwise each contiguous
+        interval is encoded separately.  ``None`` is returned only
+        when neither encoding works -- typically when an interval has
+        a bound shape that no PEP 440 specifier can express (e.g., the
+        ``[V, V]`` shape :meth:`singleton` produces for a
+        local-less version, since ``==V`` also matches ``V+local``).
+
+        Empty range produces ``(SpecifierSet("<0"),)``: ``<0`` parses
+        with upper bound ``0.dev0`` exclusive, and ``0.dev0`` is the
+        smallest possible PEP 440 version, so the range contains
+        nothing.  Full range produces ``(SpecifierSet(""),)``.
+
+        >>> r = (
+        ...     VersionRange.from_specifier_set(SpecifierSet(">=1.0,<2.0"))
+        ...     | VersionRange.from_specifier_set(SpecifierSet(">=3.0,<4.0"))
+        ... )
+        >>> [str(s) for s in r.to_specifier_sets()]
+        ['<2.0,>=1.0', '<4.0,>=3.0']
+        >>> VersionRange.empty().to_specifier_sets() == (SpecifierSet("<0"),)
+        True
+        >>> VersionRange.full().to_specifier_sets() == (SpecifierSet(""),)
+        True
+        >>> # ``!=V`` is a multi-interval range whose single-set form
+        >>> # exists; the tuple has one element.
+        >>> ne = VersionRange.from_specifier(Specifier("!=1.0"))
+        >>> ne.to_specifier_sets() == (SpecifierSet("!=1.0"),)
+        True
+        >>> # Singleton has no specifier representation in either form.
+        >>> VersionRange.singleton("1.5").to_specifier_sets() is None
+        True
+        """
+        from .specifiers import SpecifierSet  # noqa: PLC0415
+
+        if self.is_empty:
+            return (SpecifierSet("<0"),)
+        if self._bounds == _FULL_RANGE:
+            return (SpecifierSet(""),)
+
+        # Prefer the single-set form when it exists; that catches
+        # multi-interval ``!=V`` / ``!=V.*`` patterns that the
+        # per-interval encoder rejects (the "(-inf, V)" half of ``!=V``
+        # has no specifier in isolation).
+        single = self.to_specifier_set()
+        if single is not None:
+            return (single,)
+
+        out: list[SpecifierSet] = []
+        for lower, upper in self._bounds:
+            parts = _encode_interval(lower, upper)
+            if parts is None:
+                return None
+            out.append(SpecifierSet(",".join(parts)))
+        return tuple(out)
 
     def __reduce__(self) -> tuple[object, ...]:
         # Pickle support: serialize to a primitive, version-stable

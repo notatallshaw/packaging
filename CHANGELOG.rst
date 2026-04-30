@@ -16,6 +16,14 @@ Features:
   classmethods so callers can build identity / single-version ranges
   without parsing.  Vocabulary follows ``pubgrub-rs`` /
   ``version-ranges`` and Python's stdlib ``set`` API.
+* Add ``VersionRange.to_specifier_set`` and ``VersionRange.to_specifier_sets``
+  for converting back to a ``SpecifierSet`` (single-set form) or a tuple of
+  ``SpecifierSet``\ s (union form).  Both return ``None`` when the range has
+  a bound shape no PEP 440 specifier can express -- ``SpecifierSet`` is
+  closed under intersection but not under union or complement, so e.g. the
+  strict singleton ``[V, V]`` produced by :meth:`VersionRange.singleton`
+  for a local-less version has no specifier representation.  The empty
+  range round-trips through ``SpecifierSet("<0")``.
 
 Performance:
 

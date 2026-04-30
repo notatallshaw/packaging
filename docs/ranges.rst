@@ -71,6 +71,47 @@ instance and never mutates its inputs.
     >>> "3.0" in r3 and "3.1" not in r3
     True
 
+Converting back to a SpecifierSet
+---------------------------------
+
+:class:`SpecifierSet` is closed under intersection (just concatenate
+specifiers with commas) but **not** under :meth:`union` or
+:meth:`complement`: PEP 440 has no specifier for the strict singleton
+``{V}`` (``==V`` is wider since it also matches ``V+local``), nor for
+the inclusive ``AFTER_POSTS`` upper bound that arises from
+complementing ``>V``.  The conversion methods are therefore partial.
+
+* :meth:`VersionRange.to_specifier_set` returns a single ``SpecifierSet``
+  whose ``from_specifier_set`` round-trips to *self*, or ``None`` if no
+  such single set exists.  Walks consecutive interval pairs detecting
+  ``!=V`` and ``!=V.*`` exclusion gaps; outer bounds plus the chain of
+  ``!=`` fragments form a single ``SpecifierSet``.
+* :meth:`VersionRange.to_specifier_sets` returns a tuple of
+  ``SpecifierSet``\ s whose union equals *self*, or ``None`` if any
+  interval has a bound that no specifier can express.  Strictly more
+  permissive than the single-set form; for unions of disjoint specifier-
+  shaped intervals each interval encodes separately.
+
+The empty range round-trips through ``SpecifierSet("<0")``: ``<0``
+parses with upper ``0.dev0`` (excl) and ``0.dev0`` is the smallest
+possible PEP 440 version, so the resulting range contains nothing.
+
+.. doctest::
+
+    >>> r = VersionRange.from_specifier_set(SpecifierSet(">=1.0,<2.0,!=1.5"))
+    >>> str(r.to_specifier_set())
+    '!=1.5,<2.0,>=1.0'
+    >>> # Strict singletons (no local segment) have no specifier form.
+    >>> VersionRange.singleton("1.5").to_specifier_set() is None
+    True
+    >>> # Disjoint unions encode per-interval.
+    >>> a = VersionRange.from_specifier_set(SpecifierSet(">=1.0,<2.0"))
+    >>> b = VersionRange.from_specifier_set(SpecifierSet(">=3.0,<4.0"))
+    >>> [str(s) for s in (a | b).to_specifier_sets()]
+    ['<2.0,>=1.0', '<4.0,>=3.0']
+    >>> VersionRange.empty().to_specifier_set() == SpecifierSet("<0")
+    True
+
 
 .. note::
 

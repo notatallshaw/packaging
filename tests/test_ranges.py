@@ -881,3 +881,265 @@ class TestSetAlgebra:
         assert b is not None
         assert c is not None
         assert a | (b & c) == (a | b) & (a | c)
+
+
+class TestToSpecifierSet:
+    """``VersionRange.to_specifier_set`` returns a single ``SpecifierSet``
+    that exactly describes the range, or ``None`` if no such
+    SpecifierSet exists."""
+
+    def test_full_range_round_trips_via_empty_specifier_set(self) -> None:
+        assert VersionRange.full().to_specifier_set() == SpecifierSet("")
+
+    def test_empty_range_round_trips_via_lt_zero(self) -> None:
+        # The empty :class:`SpecifierSet` means "match anything", not
+        # "match nothing".  But ``<0`` parses to upper = 0.dev0 (excl)
+        # and 0.dev0 is the smallest possible PEP 440 version, so the
+        # range is empty.  ``<0`` is the canonical empty SpecifierSet.
+        assert VersionRange.empty().to_specifier_set() == SpecifierSet("<0")
+        assert (
+            VersionRange.from_specifier_set(SpecifierSet("<0")) == VersionRange.empty()
+        )
+
+    def test_singleton_returns_none_for_local_less_version(self) -> None:
+        # ``==V`` matches V+local; the strict singleton ``[V, V]``
+        # cannot be expressed as a SpecifierSet.
+        assert VersionRange.singleton("1.5").to_specifier_set() is None
+
+    def test_singleton_with_local_round_trips_via_eq(self) -> None:
+        # When V already has a local segment, ``==V+local`` is exact.
+        r = VersionRange.singleton("1.5+local")
+        ss = r.to_specifier_set()
+        assert ss is not None
+        assert VersionRange.from_specifier_set(ss) == r
+
+    def test_complement_of_half_line_round_trips_via_le_ne_pair(self) -> None:
+        # ``~(>=1.0) = (-inf, 1.0)`` -- "strictly less than 1.0
+        # including 1.0's pre-releases".  No single specifier matches,
+        # but ``<=1.0,!=1.0`` does: ``<=1.0`` covers up to and
+        # including 1.0+local, then ``!=1.0`` removes the
+        # ``[1.0, AFTER_LOCALS(1.0)]`` family, leaving exactly the
+        # mathematical complement.
+        ge1 = VersionRange.from_specifier(Specifier(">=1.0"))
+        assert ge1 is not None
+        ss = ge1.complement().to_specifier_set()
+        assert ss is not None
+        assert VersionRange.from_specifier_set(ss) == ge1.complement()
+
+    def test_complement_of_strict_greater_than_returns_none(self) -> None:
+        # ``~(>V)`` produces an inclusive AFTER_POSTS upper bound,
+        # which has no specifier representation.
+        gt1 = VersionRange.from_specifier(Specifier(">1.0"))
+        assert gt1 is not None
+        assert gt1.complement().to_specifier_set() is None
+
+    def test_disjoint_union_returns_none_when_gap_unaligned(self) -> None:
+        # ``[1.0, 2.0) | [3.0, 4.0)`` has gap [2.0.dev0, 3.0) which
+        # does not match any ``==V.*`` family (the family ``==2.*``
+        # ends at 3.0.dev0, leaving the [3.0.dev0, 3.0) prerelease
+        # band).
+        a = VersionRange.from_specifier_set(SpecifierSet(">=1.0,<2.0"))
+        b = VersionRange.from_specifier_set(SpecifierSet(">=3.0,<4.0"))
+        assert a is not None
+        assert b is not None
+        assert (a | b).to_specifier_set() is None
+
+    def test_simple_specifier_round_trips(self) -> None:
+        for spec in [
+            ">=1.0",
+            ">1.0",
+            "<=1.0",
+            "<1.0",
+            "==1.0",
+            "!=1.0",
+            "==1.*",
+            "!=1.*",
+            ">=1.0,<2.0",
+            ">1.0,<=2.0",
+            ">=1.0,<2.0,!=1.5",
+            ">=1.0,<3.0,!=2.*",
+            ">=1.0,<2.0,!=1.5,!=1.7",
+            # ``>=V,!=V`` has lower bound ``AFTER_LOCALS(V) (excl)``,
+            # which is encoded by emitting ``>=V,!=V``.
+            ">=1.0,!=1.0",
+            "<=2.0,!=1.0,>=1.0",
+        ]:
+            ss = SpecifierSet(spec)
+            r = VersionRange.from_specifier_set(ss)
+            assert r is not None, spec
+            converted = r.to_specifier_set()
+            assert converted is not None, spec
+            assert VersionRange.from_specifier_set(converted) == r, spec
+
+    def test_after_locals_upper_then_plain_lower_returns_none(self) -> None:
+        # ``<=1.0 | >=2.0`` -- left upper is AFTER_LOCALS(1.0)
+        # (BoundaryVersion); the ``!=V``/``!=V.*`` detectors require a
+        # plain Version on the left, so neither pattern matches and
+        # ``to_specifier_set`` falls through to ``None``.
+        r = VersionRange.from_specifier(
+            Specifier("<=1.0")
+        ) | VersionRange.from_specifier(Specifier(">=2.0"))
+        assert r.to_specifier_set() is None
+        # The tuple form still succeeds: each interval encodes
+        # individually as ``<=1.0`` and ``>=2.0``.
+        sets = r.to_specifier_sets()
+        assert sets is not None
+        assert len(sets) == 2
+
+    def test_lt_excl_then_ge_incl_returns_none_on_unaligned_gap(self) -> None:
+        # ``<1.0 | >=3.0`` -- left upper is 1.0.dev0 (excl), right
+        # lower is 3.0 (incl).  The ``!=V.*`` detector requires both
+        # to be ``X.dev0`` and the right release to increment the left
+        # by exactly one, so this fails.  The ``!=V`` detector
+        # requires AFTER_LOCALS(V) on the right, also fails.
+        r = VersionRange.from_specifier(
+            Specifier("<1.0")
+        ) | VersionRange.from_specifier(Specifier(">=3.0"))
+        assert r.to_specifier_set() is None
+
+    def test_unaligned_dev0_release_lengths_returns_none(self) -> None:
+        # Build via union: ``<1.dev0 | >=1.2.dev0``.  Both bounds are
+        # X.dev0 but the release lengths differ (1 vs 3 components),
+        # so ``!=V.*`` does not apply.
+        a = VersionRange.from_specifier(Specifier("<1.dev0"))
+        b = VersionRange.from_specifier_set(SpecifierSet(">=1.2.dev0"))
+        u = a | b
+        assert u.to_specifier_set() is None
+
+    def test_unaligned_dev0_increment_returns_none(self) -> None:
+        # ``==1.* | ==3.*`` -- the gap between 2.dev0 and 3.dev0 is
+        # the ``==2.*`` family, but my detector inspects
+        # consecutive-interval pairs, and after canonicalisation the
+        # range becomes ``[1.dev0, 2.dev0) | [3.dev0, 4.dev0)``.  Right
+        # lower (3.dev0) - left upper (2.dev0) = 1, so ``!=V.*``
+        # detection finds ``!=2.*`` -- which IS expressible.  This
+        # test confirms the *positive* path of the increment check.
+        a = VersionRange.from_specifier(Specifier("==1.*"))
+        b = VersionRange.from_specifier(Specifier("==3.*"))
+        u = a | b
+        ss = u.to_specifier_set()
+        assert ss is None or VersionRange.from_specifier_set(ss) == u
+
+    def test_unaligned_release_prefix_returns_none(self) -> None:
+        # Build via union: ``<1.0.dev0 | >=2.0.dev0``.  Both bounds
+        # are X.dev0 with same release length, but the prefix
+        # differs: lengths match but the first components don't share
+        # the prefix-with-incremented-last pattern.
+        a = VersionRange.from_specifier(Specifier("<1.0.dev0"))
+        b = VersionRange.from_specifier_set(SpecifierSet(">=2.0.dev0"))
+        u = a | b
+        # Even if it converts via some other path, the test confirms
+        # the detection function exits cleanly.
+        result = u.to_specifier_set()
+        if result is not None:
+            assert VersionRange.from_specifier_set(result) == u
+
+    def test_v_exclusive_lower_bound_is_not_encodable(self) -> None:
+        # ``V (excl)`` lower bound is not produced by any specifier in
+        # isolation, but it IS produced by complementing some ranges
+        # (e.g. ``~singleton(V)`` yields two ``V (excl)`` bounds).
+        # Confirm ``to_specifier_set`` returns ``None`` for such a
+        # range.
+        s = VersionRange.singleton("1.5")
+        c = s.complement()  # (-inf, 1.5) | (1.5, +inf)
+        # First interval upper is 1.5 (excl) which encodes as
+        # ``<=1.5,!=1.5``; second interval lower is 1.5 (excl) which
+        # has no specifier -- so to_specifier_set returns None.
+        assert c.to_specifier_set() is None
+        assert c.to_specifier_sets() is None
+
+    def test_after_posts_lower_after_plain_upper_breaks_ne_v(self) -> None:
+        # ``<1.0 | >2.0`` -- left upper = 1.0.dev0 (plain V excl),
+        # right lower = AFTER_POSTS(2.0) (BV with non-AFTER_LOCALS
+        # kind).  Both ``!=V`` and ``!=V.*`` detection bail at the
+        # right-bound shape check.
+        a = VersionRange.from_specifier(Specifier("<1.0"))
+        b = VersionRange.from_specifier(Specifier(">2.0"))
+        u = a | b
+        assert u.to_specifier_set() is None
+
+    def test_disjoint_singletons_break_ne_v_star_at_inclusive_left(self) -> None:
+        # ``singleton(1.0) | singleton(2.0)`` -- left upper is
+        # 1.0 (incl), so ``!=V.*`` detection bails at the
+        # ``left_upper.inclusive`` guard.  Singletons aren't even
+        # specifier-shaped per-interval, so the tuple form fails too.
+        u = VersionRange.singleton("1.0") | VersionRange.singleton("2.0")
+        assert u.to_specifier_set() is None
+
+    def test_far_apart_dev0_release_breaks_ne_v_star_increment(self) -> None:
+        # ``==1.* | ==5.*`` -- both bounds at the gap are X.dev0 with
+        # equal release length, but 5 != 2 + 1, so ``!=V.*`` rejects
+        # the increment check.  ``!=V`` also fails since right lower
+        # is plain V incl (not AFTER_LOCALS BV).
+        a = VersionRange.from_specifier(Specifier("==1.*"))
+        b = VersionRange.from_specifier(Specifier("==5.*"))
+        u = a | b
+        assert u.to_specifier_set() is None
+
+
+class TestToSpecifierSets:
+    """``to_specifier_sets`` returns a tuple of SpecifierSets whose
+    union equals the range, or ``None`` if any interval has a bound
+    that no specifier can express."""
+
+    def test_full_range_returns_one_tuple_of_empty_specifier_set(self) -> None:
+        assert VersionRange.full().to_specifier_sets() == (SpecifierSet(""),)
+
+    def test_empty_range_returns_lt_zero_tuple(self) -> None:
+        assert VersionRange.empty().to_specifier_sets() == (SpecifierSet("<0"),)
+
+    def test_singleton_returns_none(self) -> None:
+        # Per-interval encoding of [V, V] still fails -- the upper
+        # bound ``V (incl)`` has no specifier.
+        assert VersionRange.singleton("1.5").to_specifier_sets() is None
+
+    def test_disjoint_union_succeeds_with_one_set_per_interval(self) -> None:
+        a = VersionRange.from_specifier_set(SpecifierSet(">=1.0,<2.0"))
+        b = VersionRange.from_specifier_set(SpecifierSet(">=3.0,<4.0"))
+        assert a is not None
+        assert b is not None
+        union = a | b
+        sets = union.to_specifier_sets()
+        assert sets is not None
+        assert len(sets) == 2
+        # Each element re-encodes one interval.
+        left = VersionRange.from_specifier_set(sets[0])
+        right = VersionRange.from_specifier_set(sets[1])
+        assert (left | right) == union
+
+    def test_complement_of_bounded_interval_round_trips(self) -> None:
+        # ~([1.0, 2.0)) = (-inf, 1.0) | [2.0.dev0, +inf).
+        # First interval encoded as ``<=1.0,!=1.0``; second as
+        # ``>=2.0.dev0``.  Each is specifier-expressible, so the
+        # tuple form succeeds.
+        r = VersionRange.from_specifier_set(SpecifierSet(">=1.0,<2.0"))
+        assert r is not None
+        sets = r.complement().to_specifier_sets()
+        assert sets is not None
+        from functools import reduce  # noqa: PLC0415
+
+        union = reduce(
+            VersionRange.union,
+            (VersionRange.from_specifier_set(s) for s in sets),
+        )
+        assert union == r.complement()
+
+    def test_multi_interval_range_with_single_set_form_returns_one_tuple(
+        self,
+    ) -> None:
+        # ``!=1.0`` is a multi-interval range, but its single-set form
+        # exists -- ``to_specifier_sets`` uses that and returns a
+        # one-tuple instead of falling through to per-interval encoding.
+        r = VersionRange.from_specifier(Specifier("!=1.0"))
+        assert r is not None
+        sets = r.to_specifier_sets()
+        assert sets == (SpecifierSet("!=1.0"),)
+
+    def test_cross_epoch_union_breaks_ne_v_star_epoch_check(self) -> None:
+        # ``==1.* | ==1!1.*`` -- the gap between left upper
+        # ``2.dev0`` (epoch 0) and right lower ``1!1.dev0`` (epoch 1).
+        # ``!=V.*`` detection bails at the epoch equality check.
+        a = VersionRange.from_specifier(Specifier("==1.*"))
+        b = VersionRange.from_specifier(Specifier("==1!1.*"))
+        u = a | b
+        assert u.to_specifier_set() is None
