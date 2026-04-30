@@ -30,7 +30,7 @@ from typing import (
     Union,
 )
 
-from .ranges import VersionRange
+from .ranges import VersionRange, _ranges_are_prerelease_only
 from .utils import canonicalize_version
 from .version import InvalidVersion, Version
 
@@ -1026,12 +1026,24 @@ class SpecifierSet(BaseSpecifier):
             self._is_unsatisfiable = False
             return False
 
-        # The combined range encodes every cause of unsatisfiability:
-        # an empty rangelike intersection collapses bounds to ``()``,
-        # disagreeing ``===`` literals collapse the arbitrary set to
-        # ``()``, and a pre-release ``===`` literal under
-        # ``prereleases=False`` is rejected by ``is_unsatisfiable``.
-        result = self._range.is_unsatisfiable(prereleases=self.prereleases)
+        # The combined range encodes most causes of unsatisfiability:
+        # an empty rangelike intersection collapses bounds to ``()``
+        # and disagreeing ``===`` literals collapse the arbitrary set
+        # to ``()``.  Empty bounds with ``prereleases=False`` only
+        # reject every contained version when every contained version
+        # is itself a pre-release -- handled inline below.
+        range_ = self._range
+        if range_.is_empty:
+            self._is_unsatisfiable = True
+            return True
+        if self.prereleases is not False:
+            self._is_unsatisfiable = False
+            return False
+        if range_._arbitrary is not None:
+            literal = _coerce_version(range_._arbitrary)
+            result = literal is not None and literal.is_prerelease
+        else:
+            result = _ranges_are_prerelease_only(range_._bounds)
         self._is_unsatisfiable = result
         return result
 

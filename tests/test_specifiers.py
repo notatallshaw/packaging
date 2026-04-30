@@ -2944,17 +2944,12 @@ class TestIsUnsatisfiable:
             f"is_unsatisfiable() but filter matched: "
             f"{[str(v) for v in result]} for {spec_str!r}"
         )
-        # Range equivalence: ``rng.is_unsatisfiable(prereleases=...)``
-        # mirrors ``SpecifierSet.is_unsatisfiable`` and ``rng.filter``
-        # mirrors ``ss.filter``.  ``to_range`` returns ``None`` for
-        # any spec containing ``===``; for those cases the spec form
-        # alone is authoritative.
+        # Range equivalence: empty bounds imply unsatisfiability and
+        # ``rng.filter`` returns nothing.
         rng = ss.to_range()
-        if rng is not None:
-            assert rng.is_unsatisfiable(prereleases=True), (
-                f"Range disagreed about unsatisfiability: {spec_str!r}"
-            )
-            assert list(rng.filter(_SAMPLE_VERSIONS, prereleases=True)) == []
+        assert rng is not None
+        assert rng.is_empty, f"Range disagreed about unsatisfiability: {spec_str!r}"
+        assert list(rng.filter(_SAMPLE_VERSIONS, prereleases=True)) == []
 
     @pytest.mark.parametrize("spec_str", SATISFIABLE)
     def test_satisfiable(self, spec_str: str) -> None:
@@ -2963,16 +2958,14 @@ class TestIsUnsatisfiable:
         assert not ss.is_unsatisfiable(), f"Expected satisfiable: {spec_str!r}"
         result = bool(next(iter(ss.filter(_SAMPLE_VERSIONS, prereleases=True)), None))
         assert result, f"Expected filter to match at least one version for {spec_str!r}"
-        # Range equivalence: same checks via ``to_range``.
+        # Range equivalence: non-empty bounds imply satisfiability.
         rng = ss.to_range()
-        if rng is not None:
-            assert not rng.is_unsatisfiable(prereleases=True), (
-                f"Range disagreed about satisfiability: {spec_str!r}"
-            )
-            range_result = bool(
-                next(iter(rng.filter(_SAMPLE_VERSIONS, prereleases=True)), None)
-            )
-            assert range_result, f"Range filter found no version for {spec_str!r}"
+        assert rng is not None
+        assert not rng.is_empty, f"Range disagreed about satisfiability: {spec_str!r}"
+        range_result = bool(
+            next(iter(rng.filter(_SAMPLE_VERSIONS, prereleases=True)), None)
+        )
+        assert range_result, f"Range filter found no version for {spec_str!r}"
 
     @pytest.mark.parametrize("spec_str", SATISFIABLE)
     def test_filter_matches_per_spec_filter(self, spec_str: str) -> None:
@@ -3070,12 +3063,12 @@ class TestIsUnsatisfiable:
             f"is_unsatisfiable() but filter matched: "
             f"{[str(v) for v in result]} for {spec_str!r}"
         )
-        # Range equivalence: ``rng.is_unsatisfiable(prereleases=False)``
-        # mirrors the spec result for non-``===`` cases.
+        # Range equivalence: ``rng.filter(prereleases=False)`` produces
+        # nothing when the spec is unsatisfiable under
+        # ``prereleases=False``.
         rng = ss.to_range()
-        if rng is not None:
-            assert rng.is_unsatisfiable(prereleases=False)
-            assert list(rng.filter(_SAMPLE_VERSIONS, prereleases=False)) == []
+        assert rng is not None
+        assert list(rng.filter(_SAMPLE_VERSIONS, prereleases=False)) == []
 
     @pytest.mark.parametrize("spec_str", SATISFIABLE_NO_PRE)
     def test_satisfiable_prereleases_false(self, spec_str: str) -> None:
@@ -3084,14 +3077,14 @@ class TestIsUnsatisfiable:
         assert not ss.is_unsatisfiable(), f"Expected satisfiable: {spec_str!r}"
         result = bool(next(iter(ss.filter(_SAMPLE_VERSIONS)), None))
         assert result, f"Expected filter to match at least one version for {spec_str!r}"
-        # Range equivalence: same checks via ``to_range``.
+        # Range equivalence: ``rng.filter(prereleases=False)`` finds at
+        # least one version when the spec is satisfiable.
         rng = ss.to_range()
-        if rng is not None:
-            assert not rng.is_unsatisfiable(prereleases=False)
-            range_result = bool(
-                next(iter(rng.filter(_SAMPLE_VERSIONS, prereleases=False)), None)
-            )
-            assert range_result
+        assert rng is not None
+        range_result = bool(
+            next(iter(rng.filter(_SAMPLE_VERSIONS, prereleases=False)), None)
+        )
+        assert range_result
 
     def test_and_preserves_unsatisfiable(self) -> None:
         combined = SpecifierSet(">=2.0") & SpecifierSet("<1.0")
@@ -3099,7 +3092,6 @@ class TestIsUnsatisfiable:
         # Range equivalence: the combined range is empty.
         rng = combined.to_range()
         assert rng is not None
-        assert rng.is_unsatisfiable()
         assert rng.is_empty
 
     def test_and_satisfiable(self) -> None:
@@ -3109,7 +3101,7 @@ class TestIsUnsatisfiable:
         # admits versions inside [1.0, 2.0).
         rng = combined.to_range()
         assert rng is not None
-        assert not rng.is_unsatisfiable()
+        assert not rng.is_empty
         assert "1.5" in rng
 
     def test_and_reuses_interval_cache(self) -> None:

@@ -1552,19 +1552,6 @@ class VersionRange:
         if not found_final:
             yield from all_nonfinal
 
-    @property
-    def is_prerelease_only(self) -> bool:
-        """``True`` if every interval contains only pre-release versions.
-
-        With ``prereleases=False`` this is equivalent to the range
-        being unsatisfiable: every contained version is excluded.
-
-        >>> r = VersionRange.from_specifier_set(SpecifierSet(">=1.0a1,<1.0"))
-        >>> r.is_prerelease_only
-        True
-        """
-        return _ranges_are_prerelease_only(self._bounds)
-
     @classmethod
     def from_specifier(cls, specifier: Specifier) -> VersionRange:
         """Return the :class:`VersionRange` accepted by *specifier*.
@@ -1906,43 +1893,6 @@ class VersionRange:
         False
         """
         return not self._bounds
-
-    def is_unsatisfiable(self, *, prereleases: bool | None = None) -> bool:
-        """Whether no version can satisfy this range.
-
-        *prereleases* mirrors the flag used by :class:`SpecifierSet`:
-        when ``False``, a range that contains only pre-release versions
-        is treated as unsatisfiable because every contained version
-        would be excluded.  ``None`` (the default) and ``True`` mean
-        pre-releases are allowed, so only literal emptiness counts.
-
-        For ``===`` carve-out ranges, the only candidate is the literal
-        string.  ``prereleases=False`` makes the range unsatisfiable
-        when the literal parses as a pre-release :class:`Version`.
-
-        >>> r = VersionRange.from_specifier_set(SpecifierSet(">=2,<1"))
-        >>> r.is_unsatisfiable()
-        True
-        >>> r = VersionRange.from_specifier_set(SpecifierSet(">=1.0a1,<1.0b1"))
-        >>> r.is_unsatisfiable()
-        False
-        >>> r.is_unsatisfiable(prereleases=False)
-        True
-        >>> arb = VersionRange.from_specifier(Specifier("===1.0a1"))
-        >>> arb.is_unsatisfiable(prereleases=False)
-        True
-        >>> arb.is_unsatisfiable()
-        False
-        """
-        if self.is_empty:
-            return True
-        if self._arbitrary is not None:
-            if prereleases is False:
-                parsed = _coerce_version(self._arbitrary)
-                if parsed is not None and parsed.is_prerelease:
-                    return True
-            return False
-        return prereleases is False and self.is_prerelease_only
 
     def __bool__(self) -> bool:
         """``False`` when the range is empty, ``True`` otherwise.

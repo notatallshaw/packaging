@@ -1311,15 +1311,21 @@ class TestArbitraryCarveOut:
         assert restored == r
         assert restored._arbitrary == "wat"
 
-    def test_is_unsatisfiable_arbitrary_full_bounds_default(self) -> None:
+    def test_arbitrary_full_bounds_is_satisfiable(self) -> None:
         r = VersionRange.from_specifier(Specifier("===wat"))
-        assert not r.is_unsatisfiable()
-        assert not r.is_unsatisfiable(prereleases=True)
+        assert not r.is_empty
+        # SpecifierSet's ``is_unsatisfiable`` reaches the same conclusion
+        # for the wrapping spec, both with and without prereleases.
+        assert not SpecifierSet("===wat").is_unsatisfiable()
+        assert not SpecifierSet("===wat", prereleases=True).is_unsatisfiable()
 
-    def test_is_unsatisfiable_arbitrary_prerelease_with_no_pre(self) -> None:
+    def test_arbitrary_prerelease_unsatisfiable_with_no_pre(self) -> None:
+        # The carve-out range still accepts the literal; prerelease
+        # exclusion is enforced at the SpecifierSet layer.
         r = VersionRange.from_specifier(Specifier("===1.0a1"))
-        assert r.is_unsatisfiable(prereleases=False)
-        assert not r.is_unsatisfiable()
+        assert not r.is_empty
+        assert SpecifierSet("===1.0a1", prereleases=False).is_unsatisfiable()
+        assert not SpecifierSet("===1.0a1").is_unsatisfiable()
 
     def test_to_specifier_set_returns_none_when_rangelike_unencodable(self) -> None:
         # ``complement(>1.0)`` produces an inclusive AFTER_POSTS upper
