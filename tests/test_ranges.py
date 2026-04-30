@@ -64,7 +64,12 @@ class TestToRangeMethods:
         assert "1.5" in method_result
 
     def test_specifier_to_range_arbitrary(self) -> None:
-        assert Specifier("===wat").to_range() is None
+        r = Specifier("===wat").to_range()
+        assert isinstance(r, VersionRange)
+        assert r._arbitrary == "wat"
+        assert "wat" in r
+        assert "WAT" in r
+        assert "other" not in r
 
     def test_specifier_set_to_range(self) -> None:
         ss = SpecifierSet(">=1.0,<2.0")
@@ -77,7 +82,12 @@ class TestToRangeMethods:
         assert "1.5" in method_result
 
     def test_specifier_set_to_range_arbitrary(self) -> None:
-        assert SpecifierSet("===wat").to_range() is None
+        r = SpecifierSet("===wat").to_range()
+        assert isinstance(r, VersionRange)
+        assert r._arbitrary == "wat"
+        assert "wat" in r
+        assert "WAT" in r
+        assert "other" not in r
 
     def test_specifier_set_to_range_empty(self) -> None:
         r = SpecifierSet("").to_range()
@@ -97,9 +107,28 @@ class TestFromSpecifier:
         assert "1.0" in r
         assert "0.5" not in r
 
-    def test_arbitrary_returns_none(self) -> None:
-        assert VersionRange.from_specifier(Specifier("===wat")) is None
-        assert VersionRange.from_specifier(Specifier("===1.0")) is None
+    def test_arbitrary_returns_carve_out_range(self) -> None:
+        r = VersionRange.from_specifier(Specifier("===wat"))
+        assert isinstance(r, VersionRange)
+        assert r._arbitrary == "wat"
+        assert "wat" in r
+        assert "WAT" in r
+        assert "other" not in r
+
+        r = VersionRange.from_specifier(Specifier("===1.0"))
+        assert isinstance(r, VersionRange)
+        assert r._arbitrary == "1.0"
+        assert "1.0" in r
+        assert "1.0+local" not in r  # === is exact, unlike ==
+
+    def test_arbitrary_rejects_set_algebra(self) -> None:
+        r = VersionRange.from_specifier(Specifier("===wat"))
+        with pytest.raises(TypeError, match="==="):
+            r.intersection(VersionRange.full())
+        with pytest.raises(TypeError, match="==="):
+            r.union(VersionRange.full())
+        with pytest.raises(TypeError, match="==="):
+            r.complement()
 
     def test_unsatisfiable_returns_empty_range(self) -> None:
         # ``<V`` for V at the smallest possible version yields an empty
@@ -138,11 +167,25 @@ class TestFromSpecifierSet:
         assert "1.5" in r
         assert "2.0" not in r
 
-    def test_arbitrary_returns_none(self) -> None:
-        assert VersionRange.from_specifier_set(SpecifierSet("===wat")) is None
-        assert VersionRange.from_specifier_set(SpecifierSet("===wat,>=1")) is None
+    def test_arbitrary_returns_carve_out_range(self) -> None:
+        r = VersionRange.from_specifier_set(SpecifierSet("===wat"))
+        assert isinstance(r, VersionRange)
+        assert r._arbitrary == "wat"
+        assert "wat" in r
+        assert "other" not in r
+
+        # ``===wat`` combined with ``>=1`` cannot be satisfied (``wat``
+        # does not parse as a version), but the carve-out remembers the
+        # literal so the round-trip preserves both halves.
+        r = VersionRange.from_specifier_set(SpecifierSet("===wat,>=1"))
+        assert isinstance(r, VersionRange)
+        assert r._arbitrary == "wat"
+        assert r.is_empty
         # Order does not matter.
-        assert VersionRange.from_specifier_set(SpecifierSet(">=1,===wat")) is None
+        r = VersionRange.from_specifier_set(SpecifierSet(">=1,===wat"))
+        assert isinstance(r, VersionRange)
+        assert r._arbitrary == "wat"
+        assert r.is_empty
 
     def test_empty_specifier_set_is_full_range(self) -> None:
         r = VersionRange.from_specifier_set(SpecifierSet(""))
@@ -169,12 +212,13 @@ class TestFromSpecifierSet:
         second = VersionRange.from_specifier_set(ss)
         assert first is second
 
-    def test_caching_for_arbitrary_returns_same_none(self) -> None:
+    def test_caching_for_arbitrary_returns_same_object(self) -> None:
         ss = SpecifierSet("===wat")
         first = VersionRange.from_specifier_set(ss)
         second = VersionRange.from_specifier_set(ss)
-        assert first is None
-        assert second is None
+        assert first is second
+        assert first is not None
+        assert first._arbitrary == "wat"
 
     def test_cache_invalidates_on_canonicalize(self) -> None:
         # Building a SpecifierSet from an iterable leaves it
@@ -197,10 +241,16 @@ class TestFromSpecifierSet:
         # recomputed result is structurally equal.
         assert first == second
 
-    def test_combination_with_arbitrary_returns_none(self) -> None:
+    def test_combination_with_arbitrary_returns_carve_out(self) -> None:
         a = SpecifierSet(">=1.0")
         b = SpecifierSet("===wat")
-        assert VersionRange.from_specifier_set(a & b) is None
+        r = VersionRange.from_specifier_set(a & b)
+        assert isinstance(r, VersionRange)
+        assert r._arbitrary == "wat"
+        # ``wat`` does not parse as a version, so ``>=1.0`` cannot
+        # admit it -- the combined range is empty but retains the
+        # literal for round-tripping.
+        assert r.is_empty
 
 
 class TestContains:
@@ -1143,3 +1193,166 @@ class TestToSpecifierSets:
         b = VersionRange.from_specifier(Specifier("==1!1.*"))
         u = a | b
         assert u.to_specifier_set() is None
+
+
+class TestArbitraryCarveOut:
+    """``===`` arbitrary-equality ranges layer a case-insensitive
+    string-match on top of a regular range; tests here cover the
+    paths that don't fit the standard PubGrub set-theoretic shape."""
+
+    def test_filter_with_explicit_prereleases_true(self) -> None:
+        r = VersionRange.from_specifier(Specifier("===1.0a1"))
+        items = ["1.0a1", "1.0", "1.0A1", "other"]
+        assert list(r.filter(items, prereleases=True)) == ["1.0a1", "1.0A1"]
+
+    def test_filter_with_explicit_prereleases_false_drops_prerelease(self) -> None:
+        r = VersionRange.from_specifier(Specifier("===1.0a1"))
+        # ``1.0a1`` parses as a pre-release; ``prereleases=False`` drops it.
+        assert list(r.filter(["1.0a1"], prereleases=False)) == []
+
+    def test_filter_with_explicit_prereleases_false_keeps_unparseable(self) -> None:
+        r = VersionRange.from_specifier(Specifier("===wat"))
+        # ``wat`` doesn't parse as a version, so the pre-release filter
+        # cannot exclude it.  Mirrors ``Specifier.filter`` behaviour.
+        assert list(r.filter(["wat"], prereleases=False)) == ["wat"]
+
+    def test_filter_default_pep440_buffers_unparseable_until_final(self) -> None:
+        # SpecifierSet("===wat,>=1") is empty (wat doesn't satisfy >=1),
+        # so use a range whose literal IS the only item.  When the
+        # default mode runs and the only matching items are unparseable,
+        # they get yielded at the end via ``all_nonfinal``.
+        r = VersionRange.from_specifier(Specifier("===wat"))
+        assert list(r.filter(["wat", "WAT", "other"])) == ["wat", "WAT"]
+
+    def test_filter_default_pep440_yields_unparseable_after_final(self) -> None:
+        # Manually craft an arbitrary range whose literal is "1.0" but
+        # also string-matches an unparseable lookalike via case-insens.
+        # Hard to trigger via the public API; use the literal "1.0".
+        r = VersionRange.from_specifier(Specifier("===1.0"))
+        # "1.0" parses as final → emitted immediately.  No unparseable
+        # items match "1.0" (string equality is exact mod case), so this
+        # path simply yields the final.
+        assert list(r.filter(["1.0", "other", "1.0"])) == ["1.0", "1.0"]
+
+    def test_filter_default_pep440_buffers_prereleases(self) -> None:
+        # ``===1.0a1`` matches only the literal pre-release; default
+        # mode buffers it and yields at the end (no final ever appears).
+        r = VersionRange.from_specifier(Specifier("===1.0a1"))
+        assert list(r.filter(["1.0a1", "other"])) == ["1.0a1"]
+
+    def test_to_specifier_set_full_bounds(self) -> None:
+        r = VersionRange.from_specifier(Specifier("===wat"))
+        assert r.to_specifier_set() == SpecifierSet("===wat")
+
+    def test_to_specifier_set_empty_bounds_round_trips(self) -> None:
+        r = VersionRange.from_specifier_set(SpecifierSet("===wat,>=1"))
+        ss = r.to_specifier_set()
+        assert ss == SpecifierSet("===wat,<0")
+        # Round-trip through ``from_specifier_set`` produces the same range.
+        assert VersionRange.from_specifier_set(ss) == r
+
+    def test_to_specifier_set_with_rangelike_round_trips(self) -> None:
+        # ``===1.5,>=1.0,<2.0`` keeps both the literal and the bounds.
+        r = VersionRange.from_specifier_set(SpecifierSet("===1.5,>=1.0,<2.0"))
+        ss = r.to_specifier_set()
+        assert ss is not None
+        # Round-trip preserves both halves.
+        assert VersionRange.from_specifier_set(ss) == r
+
+    def test_to_specifier_sets_returns_one_tuple(self) -> None:
+        r = VersionRange.from_specifier(Specifier("===wat"))
+        sets = r.to_specifier_sets()
+        assert sets == (SpecifierSet("===wat"),)
+
+    def test_repr_arbitrary_full(self) -> None:
+        r = VersionRange.from_specifier(Specifier("===wat"))
+        assert repr(r) == "<VersionRange '===wat & (-inf, +inf)'>"
+
+    def test_repr_arbitrary_empty(self) -> None:
+        r = VersionRange.from_specifier_set(SpecifierSet("===wat,>=1"))
+        assert repr(r) == "<VersionRange '===wat & (empty)'>"
+
+    def test_eq_case_insensitive_arbitrary(self) -> None:
+        a = VersionRange.from_specifier(Specifier("===WAT"))
+        b = VersionRange.from_specifier(Specifier("===wat"))
+        assert a == b
+        assert hash(a) == hash(b)
+
+    def test_eq_arbitrary_vs_non_arbitrary_distinct(self) -> None:
+        a = VersionRange.from_specifier(Specifier("===wat"))
+        b = VersionRange.full()
+        # Both have the same bounds but differ on _arbitrary.
+        assert a != b
+        assert b != a
+
+    def test_eq_two_different_arbitrary_literals_distinct(self) -> None:
+        a = VersionRange.from_specifier(Specifier("===wat"))
+        b = VersionRange.from_specifier(Specifier("===other"))
+        assert a != b
+
+    def test_contains_unparseable_string_matching_arbitrary(self) -> None:
+        # ``===1.0,>=1.0`` keeps bounds=[1.0, +inf), arbitrary='1.0'.
+        # An unparseable string can never match the literal "1.0", so
+        # the parse-failure branch is exercised by a well-formed but
+        # case-different string... actually no, ``1.0`` parses fine.
+        # Test the ``InvalidVersion`` branch by string-matching against
+        # an unparseable literal.
+        r = VersionRange.from_specifier(Specifier("===wat"))
+        # ``"wat"`` does not parse; the ``===`` carve-out matches it
+        # via case-insensitive string equality alone.
+        assert "wat" in r
+
+    def test_pickle_round_trip_preserves_arbitrary(self) -> None:
+        r = VersionRange.from_specifier(Specifier("===wat"))
+        restored = pickle.loads(pickle.dumps(r))
+        assert restored == r
+        assert restored._arbitrary == "wat"
+
+    def test_is_unsatisfiable_arbitrary_full_bounds_default(self) -> None:
+        r = VersionRange.from_specifier(Specifier("===wat"))
+        assert not r.is_unsatisfiable()
+        assert not r.is_unsatisfiable(prereleases=True)
+
+    def test_is_unsatisfiable_arbitrary_prerelease_with_no_pre(self) -> None:
+        r = VersionRange.from_specifier(Specifier("===1.0a1"))
+        assert r.is_unsatisfiable(prereleases=False)
+        assert not r.is_unsatisfiable()
+
+    def test_to_specifier_set_returns_none_when_rangelike_unencodable(self) -> None:
+        # ``complement(>1.0)`` produces an inclusive AFTER_POSTS upper
+        # bound that no specifier can express.  A carve-out range
+        # layered on top inherits that limitation.
+        gt = VersionRange.from_specifier(Specifier(">1.0"))
+        unencodable = gt.complement()
+        assert unencodable.to_specifier_set() is None
+        # Manually layer arbitrary on top and confirm the partial form
+        # returns ``None`` rather than dropping the bounds.
+        fake = VersionRange._build(unencodable._bounds, arbitrary="1.0")
+        assert fake.to_specifier_set() is None
+        assert fake.to_specifier_sets() is None
+
+    def test_filter_bounds_check_on_manually_crafted_arbitrary(self) -> None:
+        # ``from_specifier_set`` always keeps ``_arbitrary`` and
+        # ``_bounds`` mutually consistent.  ``_filter_arbitrary`` keeps
+        # the bounds check anyway as defense-in-depth: manually craft a
+        # range whose literal parses to a version *outside* the bounds
+        # and confirm the filter rejects it.
+        ge_two = VersionRange.from_specifier(Specifier(">=2.0"))
+        fake = VersionRange._build(ge_two._bounds, arbitrary="1.5")
+        # ``"1.5"`` string-matches the literal but Version("1.5") is
+        # not in [2.0, +inf); the bounds check rejects it.
+        assert list(fake.filter(["1.5"])) == []
+        assert list(fake.filter(["1.5"], prereleases=True)) == []
+        assert list(fake.filter(["1.5"], prereleases=False)) == []
+
+    def test_contains_unparseable_with_bounded_arbitrary(self) -> None:
+        # Manually craft a carve-out range with a parseable literal and
+        # a non-trivial bounds.  An unparseable lookalike string is
+        # rejected by the InvalidVersion branch in ``__contains__``.
+        # (``_arbitrary='1.0a1'`` has no plausible unparseable
+        # case-equivalent, so this exercises a defensive code path.)
+        ge_one = VersionRange.from_specifier(Specifier(">=1.0"))
+        fake = VersionRange._build(ge_one._bounds, arbitrary="weird")
+        # ``"weird"`` matches the literal but does not parse; rangelike
+        # bounds are non-trivial, so the InvalidVersion branch triggers.
+        assert "weird" not in fake

@@ -956,12 +956,16 @@ def _unpack_bound(
 
 def _restore_version_range(
     packed_bounds: tuple[tuple[_PackedBound, _PackedBound], ...],
+    arbitrary: str | None = None,
 ) -> VersionRange:
     """Module-level pickle restorer for :class:`VersionRange`.
 
     Reconstructs the :class:`VersionRange` from the primitive form
     produced by :meth:`VersionRange.__reduce__` and bypasses the
-    :meth:`__new__` guard via :meth:`VersionRange._build`.
+    :meth:`__new__` guard via :meth:`VersionRange._build`.  The
+    ``arbitrary`` parameter is keyword-defaulted so pickles created
+    before the ``===`` carve-out (single-positional payload) still
+    restore correctly.
     """
     bounds = tuple(
         (
@@ -970,7 +974,7 @@ def _restore_version_range(
         )
         for lo, hi in packed_bounds
     )
-    return VersionRange._build(bounds)
+    return VersionRange._build(bounds, arbitrary=arbitrary)
 
 
 # ---------------------------------------------------------------------------
@@ -1202,12 +1206,34 @@ class VersionRange:
     True
     >>> bool(VersionRange.from_specifier_set(SpecifierSet(">=2.0,<1.0")))
     False
+
+    ``===`` carve-out
+    ~~~~~~~~~~~~~~~~~
+
+    PEP 440's ``===`` (arbitrary-string equality) does not describe a
+    set of :class:`~packaging.version.Version` values; it matches the
+    literal string of the candidate, case-insensitively.  As a special
+    case, :meth:`from_specifier` and :meth:`from_specifier_set` *do*
+    return a :class:`VersionRange` for ``===``: the ``_arbitrary``
+    slot stores the literal, and :meth:`__contains__` /
+    :meth:`filter` apply the case-insensitive match (intersected with
+    any rangelike specs in the same set).  Such a range **breaks**
+    PubGrub's set-theoretic invariants -- :meth:`intersection`,
+    :meth:`union`, :meth:`complement` raise :exc:`TypeError` when
+    either operand is an arbitrary-equality range, since there is no
+    sound way to combine an arbitrary-string match with the
+    Boolean-lattice operations the rest of the API guarantees.
     """
 
-    __slots__ = ("_bounds",)
-    # Slot type annotation for static type checkers; ``__slots__``
+    __slots__ = ("_arbitrary", "_bounds")
+    # Slot type annotations for static type checkers; ``__slots__``
     # already declares storage.
     _bounds: tuple[_VersionRange, ...]
+    #: When non-``None``, the literal string from a ``===`` specifier
+    #: that this range matches case-insensitively.  ``_bounds``
+    #: continues to apply: a candidate must match the literal *and*
+    #: (when it parses as a :class:`Version`) fall inside ``_bounds``.
+    _arbitrary: str | None
 
     def __new__(cls, *args: object, **kwargs: object) -> VersionRange:  # noqa: PYI034
         raise TypeError(
@@ -1218,11 +1244,36 @@ class VersionRange:
         )
 
     @classmethod
-    def _build(cls, bounds: tuple[_VersionRange, ...]) -> VersionRange:
+    def _build(
+        cls,
+        bounds: tuple[_VersionRange, ...],
+        arbitrary: str | None = None,
+    ) -> VersionRange:
         """Internal factory bypassing :meth:`__new__`."""
         instance = object.__new__(cls)
         instance._bounds = bounds
+        instance._arbitrary = arbitrary
         return instance
+
+    def _reject_arbitrary(self, other: VersionRange | None, op: str) -> None:
+        """Raise if either side carries the ``===`` arbitrary-equality flag.
+
+        ``===`` matches a literal string and is not a member of the
+        Boolean lattice :class:`VersionRange` otherwise inhabits, so
+        intersecting / uniting / complementing it has no
+        well-defined semantics and we refuse rather than return a
+        misleading result.
+        """
+        if self._arbitrary is not None or (
+            other is not None and other._arbitrary is not None
+        ):
+            msg = (
+                f"{op} is not defined on a VersionRange that came from a "
+                f"``===`` specifier; the arbitrary-string match has no "
+                f"set-theoretic semantics.  Inspect ``_arbitrary`` and "
+                f"handle these ranges separately."
+            )
+            raise TypeError(msg)
 
     @classmethod
     def empty(cls) -> VersionRange:
@@ -1291,12 +1342,18 @@ class VersionRange:
         Mirrors :meth:`set.intersection` and ``pubgrub-rs``'s
         ``Ranges::intersection``.
 
+        :raises TypeError: when either operand carries a ``===`` literal
+            (the ``_arbitrary`` slot is set).  See the class docstring's
+            "``===`` carve-out" -- arbitrary-string equality has no
+            set-theoretic intersection semantics.
+
         >>> a = VersionRange.from_specifier_set(SpecifierSet(">=1.0"))
         >>> b = VersionRange.from_specifier_set(SpecifierSet("<2.0"))
         >>> ab = VersionRange.from_specifier_set(SpecifierSet(">=1.0,<2.0"))
         >>> a.intersection(b) == ab
         True
         """
+        self._reject_arbitrary(other, "intersection")
         return self._build(tuple(_intersect_ranges(self._bounds, other._bounds)))
 
     def union(self, other: VersionRange) -> VersionRange:
@@ -1305,6 +1362,8 @@ class VersionRange:
         Adjacent or overlapping intervals collapse so the result keeps
         the same sorted, non-overlapping invariant the rest of the
         module relies on.
+
+        :raises TypeError: when either operand carries a ``===`` literal.
 
         >>> a = VersionRange.singleton("1.0")
         >>> b = VersionRange.singleton("2.0")
@@ -1315,6 +1374,7 @@ class VersionRange:
         >>> "1.5" in a.union(b)
         False
         """
+        self._reject_arbitrary(other, "union")
         return self._build(tuple(_union_ranges(self._bounds, other._bounds)))
 
     def complement(self) -> VersionRange:
@@ -1322,6 +1382,8 @@ class VersionRange:
 
         Inverts a range so that ``r.complement().complement() == r``.
         The complement of the full range is empty, and vice versa.
+
+        :raises TypeError: when this range carries a ``===`` literal.
 
         >>> r = VersionRange.from_specifier(Specifier(">=1.0"))
         >>> "0.5" in r.complement()
@@ -1331,6 +1393,7 @@ class VersionRange:
         >>> r.complement().complement() == r
         True
         """
+        self._reject_arbitrary(None, "complement")
         return self._build(tuple(_complement_ranges(self._bounds)))
 
     def __and__(self, other: object) -> VersionRange:
@@ -1378,11 +1441,110 @@ class VersionRange:
         pre-releases are buffered and only emitted if no final release
         in *iterable* is in range.
 
+        For ``===`` carve-out ranges, items must string-match the
+        literal (case-insensitively) and -- when the string parses as
+        a :class:`Version` -- fall in the range bounds.  Items that
+        do not parse as PEP 440 versions still match an arbitrary-set
+        range when their string equals the literal.
+
         >>> r = VersionRange.from_specifier_set(SpecifierSet(">=1.0,<2.0"))
         >>> list(r.filter(["0.9", "1.5", "2.0"]))
         ['1.5']
+        >>> arb = VersionRange.from_specifier(Specifier("===wat"))
+        >>> list(arb.filter(["wat", "WAT", "other"]))
+        ['wat', 'WAT']
         """
+        if self._arbitrary is not None:
+            return self._filter_arbitrary(iterable, key, prereleases)
         return _filter_by_ranges(self._bounds, iterable, key, prereleases)
+
+    def _filter_arbitrary(
+        self,
+        iterable: Iterable[Any],
+        key: Callable[[Any], Version | str] | None,
+        prereleases: bool | None,
+    ) -> Iterator[Any]:
+        """Filter implementation for the ``===`` carve-out.
+
+        Mirrors :meth:`Specifier.filter` for ``===`` but also gates on
+        the rangelike bounds when the range came from a SpecifierSet
+        that combined ``===`` with ordinary specifiers.  Layered atop
+        :func:`packaging.specifiers._pep440_filter_prereleases` for the
+        ``prereleases is None`` mode so unparseable strings buffer
+        alongside pre-releases until a final candidate appears.
+        """
+        assert self._arbitrary is not None
+        spec_lower = self._arbitrary.lower()
+
+        if not self._bounds:
+            return
+
+        full_bounds = self._bounds == _FULL_RANGE
+
+        def admit(item: object) -> tuple[bool, Version | None]:
+            raw = item if key is None else key(item)
+            if str(raw).lower() != spec_lower:
+                return False, None
+            parsed = _coerce_version(raw)
+            if (
+                parsed is not None
+                and not full_bounds
+                and not self._matches_bounds(parsed)
+            ):
+                return False, None
+            return True, parsed
+
+        if prereleases is True:
+            for item in iterable:
+                ok, _ = admit(item)
+                if ok:
+                    yield item
+            return
+
+        if prereleases is False:
+            for item in iterable:
+                ok, parsed = admit(item)
+                if not ok:
+                    continue
+                if parsed is not None and parsed.is_prerelease:
+                    continue
+                yield item
+            return
+
+        # PEP 440 default: yield finals immediately; buffer the
+        # rest until we know whether any final exists.  Mirrors
+        # :func:`packaging.specifiers._pep440_filter_prereleases`
+        # for the buffer/clear semantics.  In practice, every item
+        # that case-matches a single literal parses identically (PEP
+        # 440 parsing is case-insensitive), so the "parseable +
+        # unparseable in the same call" branches are defensive only;
+        # they only matter when a caller hand-builds a carve-out via
+        # :meth:`_build` with a deliberately inconsistent literal.
+        all_nonfinal: list[Any] = []
+        arbitrary_strings: list[Any] = []
+        found_final = False
+        for item in iterable:
+            ok, parsed = admit(item)
+            if not ok:
+                continue
+            if parsed is None:
+                if found_final:  # pragma: no cover
+                    yield item
+                else:
+                    arbitrary_strings.append(item)
+                    all_nonfinal.append(item)
+                continue
+            if not parsed.is_prerelease:
+                if not found_final:
+                    yield from arbitrary_strings
+                    arbitrary_strings.clear()
+                    found_final = True
+                yield item
+                continue
+            if not found_final:  # pragma: no branch
+                all_nonfinal.append(item)
+        if not found_final:
+            yield from all_nonfinal
 
     @property
     def is_prerelease_only(self) -> bool:
@@ -1398,21 +1560,31 @@ class VersionRange:
         return _ranges_are_prerelease_only(self._bounds)
 
     @classmethod
-    def from_specifier(cls, specifier: Specifier) -> VersionRange | None:
+    def from_specifier(cls, specifier: Specifier) -> VersionRange:
         """Return the :class:`VersionRange` accepted by *specifier*.
 
-        Returns ``None`` for the ``===`` operator, which performs
-        arbitrary-string equality and is not expressible as a version
-        range.
+        For the ``===`` arbitrary-equality operator, returns a
+        :class:`VersionRange` carrying the literal in its
+        :attr:`_arbitrary` slot.  Such ranges support
+        :meth:`__contains__`, :meth:`filter`, and the
+        ``to_specifier_set`` round-trip but raise on
+        :meth:`intersection` / :meth:`union` / :meth:`complement` --
+        see the class docstring's "``===`` carve-out" section.
 
         Non-``===`` results are cached on the *specifier* instance,
-        so repeated calls are O(1).  ``===`` returns ``None`` after a
-        single operator check, which is also effectively O(1).
+        so repeated calls are O(1).
 
         >>> isinstance(VersionRange.from_specifier(Specifier(">=1.0")), VersionRange)
         True
-        >>> VersionRange.from_specifier(Specifier("===wat")) is None
+        >>> r = VersionRange.from_specifier(Specifier("===wat"))
+        >>> r._arbitrary
+        'wat'
+        >>> "wat" in r
         True
+        >>> "WAT" in r
+        True
+        >>> "other" in r
+        False
         """
         cached = specifier._range_cache
         if cached is not None:
@@ -1420,7 +1592,14 @@ class VersionRange:
 
         op = specifier.operator
         if op == "===":
-            return None  # ``===`` has no range; nothing to cache.
+            # Arbitrary-string equality: the range matches the literal
+            # ``specifier.version`` case-insensitively.  Bounds are
+            # left at the full range so a parseable candidate that
+            # string-matches always passes (the bounds check on
+            # ``__contains__`` is vacuously true on the full range).
+            result = cls._build(_FULL_RANGE, arbitrary=specifier.version)
+            specifier._range_cache = result
+            return result
 
         ver_str = specifier.version
         result: VersionRange
@@ -1436,7 +1615,7 @@ class VersionRange:
         return result
 
     @classmethod
-    def from_specifier_set(cls, specifier_set: SpecifierSet) -> VersionRange | None:
+    def from_specifier_set(cls, specifier_set: SpecifierSet) -> VersionRange:
         """Return the :class:`VersionRange` accepted by *specifier_set*.
 
         The result is the intersection of every specifier in the set.
@@ -1444,12 +1623,15 @@ class VersionRange:
         unsatisfiable set yields an empty :class:`VersionRange` (where
         ``bool(r) is False``).
 
-        Returns ``None`` when any specifier uses ``===``.
+        Sets containing ``===`` produce a range with the literal in
+        :attr:`_arbitrary`; the bounds reflect the rangelike specs in
+        the set.  Multiple ``===`` with different literals (or a
+        literal that does not satisfy the rangelike intersection)
+        yield the empty range.  Such ranges break PubGrub
+        invariants -- see the class docstring's "``===`` carve-out".
 
-        Non-``===`` results are cached on the *specifier_set* instance,
-        so repeated calls are O(1).  Sets containing ``===`` return
-        ``None`` after a single flag check, which is also effectively
-        O(1).
+        Results are cached on the *specifier_set* instance, so
+        repeated calls are O(1).
 
         >>> isinstance(
         ...     VersionRange.from_specifier_set(SpecifierSet(">=1.0,<2.0")),
@@ -1458,30 +1640,68 @@ class VersionRange:
         True
         >>> VersionRange.from_specifier_set(SpecifierSet(">=2.0,<1.0")).is_empty
         True
-        >>> VersionRange.from_specifier_set(SpecifierSet("===wat")) is None
+        >>> r = VersionRange.from_specifier_set(SpecifierSet("===wat"))
+        >>> r._arbitrary
+        'wat'
+        >>> "wat" in r
         True
         """
         cached = specifier_set._range_cache
         if cached is not None:
             return cached
-        if specifier_set._has_arbitrary:
-            return None  # ``===`` has no range; nothing to cache.
-        if not specifier_set._specs:
-            result = cls._build(_FULL_RANGE)
+
+        # Collect ``===`` literals separately from rangelike specs;
+        # the rangelike intersection still drives the bounds, the
+        # arbitrary literal layers a string-match check on top.
+        arbitrary_specs = [s for s in specifier_set._specs if s.operator == "==="]
+        rangelike_specs = [s for s in specifier_set._specs if s.operator != "==="]
+
+        if not rangelike_specs:
+            rangelike_result: VersionRange = cls._build(_FULL_RANGE)
         else:
-            result = None
-            for s in specifier_set._specs:
+            tmp: VersionRange | None = None
+            for s in rangelike_specs:
                 sub = cls.from_specifier(s)
-                # Not ``has_arbitrary``, so ``from_specifier`` is never
-                # ``None`` here.
-                assert sub is not None
-                if result is None:
-                    result = sub
+                if tmp is None:
+                    tmp = sub
                 else:
-                    result = result.intersection(sub)
-                    if result.is_empty:
+                    tmp = tmp.intersection(sub)
+                    if tmp.is_empty:
                         break  # empty intersection — already unsatisfiable.
-            assert result is not None  # ``_specs`` is non-empty above.
+            assert tmp is not None
+            rangelike_result = tmp
+
+        if not arbitrary_specs:
+            specifier_set._range_cache = rangelike_result
+            return rangelike_result
+
+        # Multiple ``===`` literals must all match (case-insensitively)
+        # the same string; otherwise no candidate can satisfy them all.
+        first_literal = arbitrary_specs[0].version
+        if any(s.version.lower() != first_literal.lower() for s in arbitrary_specs[1:]):
+            result = cls._build((), arbitrary=first_literal)
+        else:
+            # If the literal parses as a Version, it must satisfy the
+            # rangelike intersection; otherwise no candidate matches.
+            parsed_literal: Version | None
+            try:
+                parsed_literal = Version(first_literal)
+            except InvalidVersion:
+                parsed_literal = None
+
+            if parsed_literal is None:
+                # Unparseable literal: rangelike must be the full range
+                # for the literal to satisfy it (any non-trivial bound
+                # rejects unparseable strings).
+                if rangelike_result._bounds == _FULL_RANGE:
+                    result = cls._build(_FULL_RANGE, arbitrary=first_literal)
+                else:
+                    result = cls._build((), arbitrary=first_literal)
+            elif parsed_literal in rangelike_result:
+                result = cls._build(rangelike_result._bounds, arbitrary=first_literal)
+            else:
+                result = cls._build((), arbitrary=first_literal)
+
         specifier_set._range_cache = result
         return result
 
@@ -1530,6 +1750,8 @@ class VersionRange:
         # :mod:`packaging.ranges`.
         from .specifiers import SpecifierSet  # noqa: PLC0415
 
+        if self._arbitrary is not None:
+            return self._arbitrary_to_specifier_set()
         if self.is_empty:
             # ``<0`` parses to upper = 0.dev0 (excl); 0.dev0 is the
             # smallest possible PEP 440 version, so the range contains
@@ -1603,6 +1825,9 @@ class VersionRange:
         """
         from .specifiers import SpecifierSet  # noqa: PLC0415
 
+        if self._arbitrary is not None:
+            single = self._arbitrary_to_specifier_set()
+            return None if single is None else (single,)
         if self.is_empty:
             return (SpecifierSet("<0"),)
         if self._bounds == _FULL_RANGE:
@@ -1624,6 +1849,29 @@ class VersionRange:
             out.append(SpecifierSet(",".join(parts)))
         return tuple(out)
 
+    def _arbitrary_to_specifier_set(self) -> SpecifierSet | None:
+        """Round-trip a ``===`` carve-out range to a single SpecifierSet.
+
+        Returned set always begins with ``===<literal>``.  The empty
+        carve-out range emits ``===<literal>,<0`` so the round-trip
+        preserves both the literal and the unsatisfiability.
+        """
+        from .specifiers import SpecifierSet  # noqa: PLC0415
+
+        assert self._arbitrary is not None
+
+        if not self._bounds:
+            return SpecifierSet(f"==={self._arbitrary},<0")
+        if self._bounds == _FULL_RANGE:
+            return SpecifierSet(f"==={self._arbitrary}")
+
+        # Encode the rangelike bounds as a SpecifierSet, then prepend
+        # the ``===`` literal.  Non-encodable bounds collapse to ``None``.
+        rangelike = self._build(self._bounds).to_specifier_set()
+        if rangelike is None:
+            return None
+        return SpecifierSet(f"==={self._arbitrary},{rangelike!s}")
+
     def __reduce__(self) -> tuple[object, ...]:
         # Pickle support: serialize to a primitive, version-stable
         # form.  See :data:`_PackedBound` for the layout.  Reconstruction
@@ -1636,6 +1884,7 @@ class VersionRange:
                     (_pack_bound(lower), _pack_bound(upper))
                     for lower, upper in self._bounds
                 ),
+                self._arbitrary,
             ),
         )
 
@@ -1661,16 +1910,33 @@ class VersionRange:
         would be excluded.  ``None`` (the default) and ``True`` mean
         pre-releases are allowed, so only literal emptiness counts.
 
+        For ``===`` carve-out ranges, the only candidate is the literal
+        string.  ``prereleases=False`` makes the range unsatisfiable
+        when the literal parses as a pre-release :class:`Version`.
+
         >>> r = VersionRange.from_specifier_set(SpecifierSet(">=2,<1"))
         >>> r.is_unsatisfiable()
         True
-        >>> r = VersionRange.from_specifier_set(SpecifierSet(">=1.0a1,<1.0"))
+        >>> r = VersionRange.from_specifier_set(SpecifierSet(">=1.0a1,<1.0b1"))
         >>> r.is_unsatisfiable()
         False
         >>> r.is_unsatisfiable(prereleases=False)
         True
+        >>> arb = VersionRange.from_specifier(Specifier("===1.0a1"))
+        >>> arb.is_unsatisfiable(prereleases=False)
+        True
+        >>> arb.is_unsatisfiable()
+        False
         """
-        return self.is_empty or (prereleases is False and self.is_prerelease_only)
+        if self.is_empty:
+            return True
+        if self._arbitrary is not None:
+            if prereleases is False:
+                parsed = _coerce_version(self._arbitrary)
+                if parsed is not None and parsed.is_prerelease:
+                    return True
+            return False
+        return prereleases is False and self.is_prerelease_only
 
     def __bool__(self) -> bool:
         """``False`` when the range is empty, ``True`` otherwise.
@@ -1687,7 +1953,10 @@ class VersionRange:
 
         *item* may be a :class:`~packaging.version.Version` or a string
         parseable as one.  Strings that do not parse as PEP 440
-        versions are not contained.
+        versions are not contained, except when this range came from a
+        ``===`` specifier and *item* string-matches the literal
+        case-insensitively (the ``===`` carve-out -- see the class
+        docstring).
 
         >>> r = VersionRange.from_specifier_set(SpecifierSet(">=1.0,<2.0"))
         >>> "1.5" in r
@@ -1696,7 +1965,32 @@ class VersionRange:
         False
         >>> "not-a-version" in r
         False
+        >>> # ``===`` carve-out: literal-string match.
+        >>> arb = VersionRange.from_specifier(Specifier("===wat"))
+        >>> "wat" in arb
+        True
+        >>> "WAT" in arb
+        True
         """
+        if self._arbitrary is not None:
+            # ``===`` carve-out: literal-string match (case-insensitive).
+            # Layered on top of the rangelike bounds: a candidate must
+            # also pass the bounds check when it parses as a Version.
+            item_str = str(item)
+            if item_str.lower() != self._arbitrary.lower():
+                return False
+            if not self._bounds:
+                return False
+            if self._bounds == _FULL_RANGE:
+                return True
+            if isinstance(item, Version):
+                parsed: Version | None = item
+            else:
+                try:
+                    parsed = Version(item_str)
+                except InvalidVersion:
+                    return False
+            return self._matches_bounds(parsed)
         # Inline the membership check (rather than delegating to a
         # helper) so the hot path on ``Specifier.contains`` /
         # ``SpecifierSet.contains`` avoids one Python function call.
@@ -1705,6 +1999,10 @@ class VersionRange:
                 item = Version(item)
             except InvalidVersion:
                 return False
+        return self._matches_bounds(item)
+
+    def _matches_bounds(self, item: Version) -> bool:
+        """Helper: pure-bounds membership check (no ``===`` layering)."""
         bounds = self._bounds
         if not bounds:
             return False
@@ -1729,7 +2027,9 @@ class VersionRange:
 
         Equality is structural over the internal bounds representation,
         so ranges produced by different specifier strings that describe
-        the same set compare equal.
+        the same set compare equal.  ``===`` carve-out: the
+        ``_arbitrary`` literal is compared case-insensitively (matches
+        PEP 440's ``===`` semantics).
 
         >>> VersionRange.from_specifier_set(SpecifierSet(">=1.0,<2.0")) == (
         ...     VersionRange.from_specifier_set(SpecifierSet(">=1.0,<2.0"))
@@ -1742,10 +2042,18 @@ class VersionRange:
         """
         if not isinstance(other, VersionRange):
             return NotImplemented
-        return self._bounds == other._bounds
+        if self._bounds != other._bounds:
+            return False
+        if self._arbitrary is None and other._arbitrary is None:
+            return True
+        if self._arbitrary is None or other._arbitrary is None:
+            return False
+        return self._arbitrary.lower() == other._arbitrary.lower()
 
     def __hash__(self) -> int:
-        return hash(self._bounds)
+        if self._arbitrary is None:
+            return hash(self._bounds)
+        return hash((self._bounds, self._arbitrary.lower()))
 
     def __repr__(self) -> str:
         """Human-readable representation.
@@ -1761,6 +2069,8 @@ class VersionRange:
         <VersionRange '(-inf, +inf)'>
         >>> VersionRange.from_specifier_set(SpecifierSet(">=2.0,<1.0"))
         <VersionRange '(empty)'>
+        >>> VersionRange.from_specifier(Specifier("===wat"))
+        <VersionRange '===wat & (-inf, +inf)'>
         """
         if not self._bounds:
             body = "(empty)"
@@ -1769,4 +2079,6 @@ class VersionRange:
                 f"{_format_lower(lower)}, {_format_upper(upper)}"
                 for lower, upper in self._bounds
             )
+        if self._arbitrary is not None:
+            body = f"==={self._arbitrary} & {body}"
         return f"<{self.__class__.__name__} {body!r}>"

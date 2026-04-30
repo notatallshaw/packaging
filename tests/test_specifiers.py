@@ -585,13 +585,11 @@ class TestSpecifier:
     def test_invalid_version(self, spec_str: str, version: str, expected: bool) -> None:
         spec = Specifier(spec_str, prereleases=True)
         assert spec.contains(version) == expected
-        # Range equivalence: an unparsable string is never in the
-        # range, so the only ``True`` cases are the arbitrary-equality
-        # ones (``===``), for which ``to_range`` returns ``None`` and
-        # we skip the check.
+        # Range equivalence: ``===`` carve-out ranges still answer
+        # ``contains`` correctly via the case-insensitive literal match.
         rng = spec.to_range()
-        if rng is not None:
-            assert (version in rng) == expected
+        assert rng is not None
+        assert (version in rng) == expected
 
     @pytest.mark.parametrize(
         (
@@ -738,10 +736,13 @@ class TestSpecifier:
     ) -> None:
         spec = Specifier(spec_str)
         assert spec.contains(version) == expected
-        # ``===`` is the only operator with no range form; the partial
-        # equivalence is therefore "to_range is None for arbitrary
-        # equality, no exceptions".
-        assert spec.to_range() is None
+        # ``===`` carve-out: ``to_range`` returns a VersionRange whose
+        # ``_arbitrary`` slot carries the literal; membership matches
+        # the same case-insensitive string equality as ``contains``.
+        r = spec.to_range()
+        assert r is not None
+        assert r._arbitrary == spec.version
+        assert (version in r) == expected
 
     @pytest.mark.parametrize(
         ("spec_str", "version", "expected"),
@@ -797,15 +798,12 @@ class TestSpecifier:
     ) -> None:
         spec = Specifier(spec_str, prereleases=True)
         assert spec.contains(version) == expected
-        # ``===`` has no range; otherwise the structural check matches
-        # ``contains`` whenever ``prereleases=True`` is in effect (the
-        # specifier carries the override here).
+        # ``===`` carve-out: pass the original *version* (not a parsed
+        # one) so the case-insensitive literal match sees the same
+        # string ``contains`` saw.
         rng = spec.to_range()
-        if rng is not None:
-            check = (
-                Version(str(version)) if not isinstance(version, Version) else version
-            )
-            assert (check in rng) == expected
+        assert rng is not None
+        assert (version in rng) == expected
 
     @pytest.mark.parametrize(
         ("specifier", "expected"),
@@ -1021,15 +1019,15 @@ class TestSpecifier:
 
         assert result == expected
 
-        # Range equivalence: ``Specifier.to_range`` is None for ``===``
-        # (arbitrary equality) and for those cases the spec form is
-        # authoritative.  Otherwise ``Specifier._resolve_prereleases``
-        # gives us the same value the spec form's filter would use.
+        # Range equivalence: the carve-out range mirrors the spec
+        # form's filter, including the ``===`` arbitrary-equality path.
+        # ``Specifier._resolve_prereleases`` gives the same effective
+        # value the spec form's filter would use.
         rng = spec.to_range()
-        if rng is not None:
-            effective_pre = spec._resolve_prereleases(prereleases)
-            range_result = list(rng.filter(input, prereleases=effective_pre))
-            assert range_result == expected
+        assert rng is not None
+        effective_pre = spec._resolve_prereleases(prereleases)
+        range_result = list(rng.filter(input, prereleases=effective_pre))
+        assert range_result == expected
 
     @pytest.mark.parametrize(
         ("specifier", "input", "expected"),
@@ -1057,8 +1055,11 @@ class TestSpecifier:
     ) -> None:
         spec = Specifier(specifier, prereleases=True)
         assert list(spec.filter(input)) == expected
-        # ``===`` has no range form; assert that contract too.
-        assert spec.to_range() is None
+        # ``===`` carve-out: range form mirrors ``Specifier.filter``.
+        rng = spec.to_range()
+        assert rng is not None
+        assert rng._arbitrary == spec.version
+        assert list(rng.filter(input, prereleases=True)) == expected
 
     @pytest.mark.parametrize(
         ("prereleases", "expected_indexes"),
@@ -1753,31 +1754,35 @@ class TestSpecifierSet:
 
         assert result == expected
 
-        # Range equivalence: ``to_range`` is None for any spec
-        # containing ``===``; for those cases the spec form is
-        # authoritative.  For non-arbitrary specifier sets, replicate
-        # ``SpecifierSet._resolve_prereleases`` exposes the same chain
-        # ``filter`` uses internally, so tests don't duplicate it.
-        # The empty SpecifierSet's range still admits only parseable
-        # versions; the spec form lets arbitrary strings through, so
-        # we drop unparseable strings from ``expected`` for the range
-        # comparison.
+        # Range equivalence: every spec form -- including ``===`` --
+        # has a range thanks to the carve-out.  ``_resolve_prereleases``
+        # exposes the same chain ``filter`` uses internally, so tests
+        # don't duplicate it.  For pure rangelike SpecifierSets,
+        # unparseable strings are silently dropped (the range admits
+        # only parseable versions); for ``===`` carve-out ranges,
+        # unparseable strings that string-match the literal are kept.
         rng = spec.to_range()
-        if rng is not None:
-            from packaging.version import InvalidVersion  # noqa: PLC0415
+        assert rng is not None
 
-            def _parses(s: object) -> bool:
-                if isinstance(s, Version):
-                    return True
-                try:
-                    Version(s)  # type: ignore[arg-type]
-                except (InvalidVersion, TypeError):
-                    return False
+        from packaging.version import InvalidVersion  # noqa: PLC0415
+
+        def _parses(s: object) -> bool:
+            if isinstance(s, Version):
                 return True
+            try:
+                Version(s)  # type: ignore[arg-type]
+            except (InvalidVersion, TypeError):
+                return False
+            return True
 
-            effective_pre = spec._resolve_prereleases(prereleases)
-            range_result = list(rng.filter(input, prereleases=effective_pre))
+        effective_pre = spec._resolve_prereleases(prereleases)
+        range_result = list(rng.filter(input, prereleases=effective_pre))
+        if rng._arbitrary is None:
             assert range_result == [v for v in expected if _parses(v)]
+        else:
+            # ``===`` lets unparseable strings through when they
+            # case-match the literal -- expected stays as-is.
+            assert range_result == expected
 
     @pytest.mark.parametrize(
         ("prereleases", "expected_indexes"),
@@ -2355,13 +2360,11 @@ class TestSpecifierSet:
     ) -> None:
         spec = SpecifierSet(specifier)
         assert spec.contains(version) == expected
-        # Range equivalence: only the ``===``-bearing specs return
-        # ``None`` from ``to_range``.  The non-``===`` specs (e.g.
-        # ``!=1.0`` or ``>=1.0,!=2.0``) have a range, so we cross-
-        # check them too.  Unparseable strings are never in any range.
+        # Range equivalence: every spec form -- including ``===`` --
+        # has a range form thanks to the carve-out.
         rng = spec.to_range()
-        if rng is not None:
-            assert (version in rng) == expected
+        assert rng is not None
+        assert (version in rng) == expected
 
     @pytest.mark.parametrize(
         ("spec_str", "version", "expected"),
@@ -2393,9 +2396,11 @@ class TestSpecifierSet:
     ) -> None:
         spec = SpecifierSet(spec_str, prereleases=True)
         assert spec.contains(version) == expected
-        # ``===``-only specs have no range; mixed specs (``>=1.0,===X``)
-        # also have no range because any ``===`` taints the set.
-        assert spec.to_range() is None
+        # ``===`` carve-out: range form mirrors ``SpecifierSet.contains``.
+        rng = spec.to_range()
+        assert rng is not None
+        assert rng._arbitrary is not None
+        assert (version in rng) == expected
 
     @pytest.mark.parametrize(
         ("specifier", "expected"),

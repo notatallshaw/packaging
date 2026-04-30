@@ -24,6 +24,14 @@ Features:
   strict singleton ``[V, V]`` produced by :meth:`VersionRange.singleton`
   for a local-less version has no specifier representation.  The empty
   range round-trips through ``SpecifierSet("<0")``.
+* ``Specifier.to_range`` and ``SpecifierSet.to_range`` now return a
+  ``VersionRange`` for ``===`` (arbitrary-equality) specifiers as a
+  carve-out: the literal lives in a private ``_arbitrary`` slot and the
+  range answers ``contains`` / ``filter`` via case-insensitive string
+  match.  Such carve-out ranges break PubGrub set-theoretic invariants
+  and ``intersection`` / ``union`` / ``complement`` raise ``TypeError``
+  when either operand is a carve-out.  Previously the methods returned
+  ``None``.
 
 Performance:
 

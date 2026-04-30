@@ -33,9 +33,12 @@ Usage
     True
     >>> bool(empty)
     False
-    >>> # Specifiers with the ``===`` arbitrary-equality operator cannot be
-    >>> # expressed as a version range; the factories return ``None``.
-    >>> VersionRange.from_specifier_set(SpecifierSet("===wat")) is None
+    >>> # Specifiers with the ``===`` arbitrary-equality operator
+    >>> # produce a carve-out range with the literal in ``_arbitrary``.
+    >>> arb = VersionRange.from_specifier_set(SpecifierSet("===wat"))
+    >>> arb._arbitrary
+    'wat'
+    >>> "wat" in arb and "WAT" in arb
     True
 
 Set algebra
@@ -43,7 +46,11 @@ Set algebra
 
 ``VersionRange`` is closed under the standard Boolean lattice
 operations.  Each combinator returns a new :class:`VersionRange`
-instance and never mutates its inputs.
+instance and never mutates its inputs.  The ``===`` carve-out is the
+exception: arbitrary-equality ranges are not members of the lattice
+and :meth:`~VersionRange.intersection`, :meth:`~VersionRange.union`,
+and :meth:`~VersionRange.complement` raise :exc:`TypeError` when
+either operand carries one.
 
 .. doctest::
 
@@ -111,6 +118,11 @@ possible PEP 440 version, so the resulting range contains nothing.
     ['<2.0,>=1.0', '<4.0,>=3.0']
     >>> VersionRange.empty().to_specifier_set() == SpecifierSet("<0")
     True
+    >>> # ``===`` carve-out ranges round-trip through ``===<literal>``
+    >>> # (combined with rangelike fragments when present).
+    >>> arb = VersionRange.from_specifier_set(SpecifierSet("===wat"))
+    >>> str(arb.to_specifier_set())
+    '===wat'
 
 
 .. note::

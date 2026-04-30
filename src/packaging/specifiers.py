@@ -16,7 +16,6 @@
 from __future__ import annotations
 
 import abc
-import functools
 import re
 import sys
 import typing
@@ -398,8 +397,8 @@ class Specifier(BaseSpecifier):
         self._prereleases = prereleases
         # Lazy caches; ``_PRE_UNSET`` distinguishes "never computed"
         # from any legitimate cached value.  ``_range_cache`` uses
-        # plain ``None`` for "uncached" since ``===`` does not cache
-        # its ``None`` result (a single operator check on each call).
+        # plain ``None`` for "uncached" -- ``from_specifier`` always
+        # produces a real range, even for ``===``.
         self._spec_version: tuple[str, Version] | None = None
         self._range_cache: VersionRange | None = None
         self._auto_prereleases: object = _PRE_UNSET
@@ -421,14 +420,15 @@ class Specifier(BaseSpecifier):
         return spec_version
 
     @property
-    def _range(self) -> VersionRange | None:
+    def _range(self) -> VersionRange:
         """The :class:`VersionRange` accepted by this specifier.
 
-        ``None`` for the ``===`` operator (arbitrary-string equality is
-        not expressible as a range).  Each standard operator maps to a
-        range with one or two intervals.  Computed lazily on first
-        access; the result is cached on this :class:`Specifier`
-        instance.
+        Each standard operator maps to a range with one or two
+        intervals.  ``===`` returns a carve-out range whose
+        ``_arbitrary`` slot carries the literal -- see the
+        :class:`~packaging.ranges.VersionRange` "``===`` carve-out".
+        Computed lazily on first access; the result is cached on this
+        :class:`Specifier` instance.
         """
         return VersionRange.from_specifier(self)
 
@@ -655,24 +655,25 @@ class Specifier(BaseSpecifier):
 
         # Read the cache slot directly here; routing through the
         # :attr:`_range` property would add descriptor-protocol overhead
-        # to every call.  ``self.operator != "==="`` above guarantees a
-        # real range here, never ``None``.
+        # to every call.
         version_range = self._range_cache
         if version_range is None:
             version_range = VersionRange.from_specifier(self)
-        return parsed in version_range  # type: ignore[operator]
+        return parsed in version_range
 
-    def to_range(self) -> VersionRange | None:
-        """Return the :class:`VersionRange` accepted by this specifier,
-        or ``None`` for the ``===`` operator.
+    def to_range(self) -> VersionRange:
+        """Return the :class:`VersionRange` accepted by this specifier.
 
         Equivalent to :meth:`VersionRange.from_specifier`; provided
-        here for symmetry with :meth:`SpecifierSet.to_range`.
+        here for symmetry with :meth:`SpecifierSet.to_range`.  For
+        ``===`` the returned range carries the literal in its
+        ``_arbitrary`` slot -- see the
+        :class:`~packaging.ranges.VersionRange` "``===`` carve-out".
 
         >>> isinstance(Specifier(">=1.0").to_range(), VersionRange)
         True
-        >>> Specifier("===wat").to_range() is None
-        True
+        >>> Specifier("===wat").to_range()._arbitrary
+        'wat'
         """
         return VersionRange.from_specifier(self)
 
@@ -750,7 +751,7 @@ class Specifier(BaseSpecifier):
         version_range = self._range_cache
         if version_range is None:
             version_range = VersionRange.from_specifier(self)
-        yield from version_range.filter(iterable, key, prereleases)  # type: ignore[union-attr]
+        yield from version_range.filter(iterable, key, prereleases)
 
     def _resolve_prereleases(self, prereleases: bool | None) -> bool | None:
         """Compute the effective ``prereleases`` value the range filter
@@ -1056,14 +1057,16 @@ class SpecifierSet(BaseSpecifier):
         return iter(self._specs)
 
     @property
-    def _range(self) -> VersionRange | None:
+    def _range(self) -> VersionRange:
         """The intersection of every specifier's :class:`VersionRange`.
 
-        ``None`` when any spec uses ``===`` (arbitrary-string matching
-        cannot be modeled as a range).  An empty :class:`VersionRange`
-        (``is_empty=True``) when the intersection is unsatisfiable.
-        Computed lazily on first access; the result is cached on this
-        :class:`SpecifierSet` instance.
+        Sets containing ``===`` produce a carve-out range with the
+        literal in ``_arbitrary`` -- see the
+        :class:`~packaging.ranges.VersionRange` "``===`` carve-out".
+        An empty :class:`VersionRange` (``is_empty=True``) when the
+        intersection is unsatisfiable.  Computed lazily on first
+        access; the result is cached on this :class:`SpecifierSet`
+        instance.
         """
         return VersionRange.from_specifier_set(self)
 
@@ -1089,72 +1092,24 @@ class SpecifierSet(BaseSpecifier):
             self._is_unsatisfiable = False
             return False
 
-        # Build the rangelike portion of the set: the public range when
-        # there is no ``===``, otherwise the intersection of just the
-        # rangelike specs.  ``None`` means "no rangelike specs", in
-        # which case range emptiness is not applicable.
-        version_range = self._range
-        if version_range is None and self._has_arbitrary:
-            rangelike = [r for s in self._specs if (r := s._range) is not None]
-            if rangelike:
-                version_range = functools.reduce(VersionRange.intersection, rangelike)
-
-        range_unsat = version_range is not None and version_range.is_unsatisfiable(
-            prereleases=self.prereleases
-        )
-        result = range_unsat or self._check_arbitrary_unsatisfiable()
+        # The combined range encodes every cause of unsatisfiability:
+        # an empty rangelike intersection collapses bounds to ``()``,
+        # disagreeing ``===`` literals collapse the arbitrary set to
+        # ``()``, and a pre-release ``===`` literal under
+        # ``prereleases=False`` is rejected by ``is_unsatisfiable``.
+        result = self._range.is_unsatisfiable(prereleases=self.prereleases)
         self._is_unsatisfiable = result
         return result
 
-    def _check_arbitrary_unsatisfiable(self) -> bool:
-        """Check ``===`` (arbitrary equality) specs for unsatisfiability.
-
-        ``===`` uses case-insensitive string comparison, so the only
-        candidate that can match ``===V`` is the literal string V.
-        Return ``True`` when that candidate is excluded by another
-        specifier in the set.
-        """
-        arbitrary = [s for s in self._specs if s.operator == "==="]
-        if not arbitrary:
-            return False
-
-        # Multiple ``===`` must agree on the same string (case-insensitive).
-        first = arbitrary[0].version.lower()
-        if any(s.version.lower() != first for s in arbitrary[1:]):
-            return True
-
-        # The sole candidate is the ``===`` version string.  Check
-        # whether it can satisfy every standard spec.
-        candidate = _coerce_version(arbitrary[0].version)
-
-        # With ``prereleases=False``, a pre-release candidate is
-        # excluded by ``contains`` before the ``===`` string check
-        # even runs.
-        if (
-            self.prereleases is False
-            and candidate is not None
-            and candidate.is_prerelease
-        ):
-            return True
-
-        standard = [s for s in self._specs if s.operator != "==="]
-        if not standard:
-            return False
-
-        if candidate is None:
-            # Unparsable string cannot satisfy any standard spec.
-            return True
-
-        return not all(s.contains(candidate) for s in standard)
-
-    def to_range(self) -> VersionRange | None:
+    def to_range(self) -> VersionRange:
         """Return the :class:`VersionRange` accepted by this specifier set.
 
         The result is the intersection of every specifier in the set.
         An empty :class:`SpecifierSet` yields the unbounded range; an
         unsatisfiable set yields an empty :class:`VersionRange` (where
-        ``bool(r) is False``).  Returns ``None`` when any specifier
-        uses ``===``.
+        ``bool(r) is False``).  Sets containing ``===`` produce a
+        carve-out range with the literal in ``_arbitrary`` -- see the
+        :class:`~packaging.ranges.VersionRange` "``===`` carve-out".
 
         Equivalent to :meth:`VersionRange.from_specifier_set`; the
         result is cached on this :class:`SpecifierSet` instance, so
@@ -1166,8 +1121,8 @@ class SpecifierSet(BaseSpecifier):
         False
         >>> SpecifierSet(">=2.0,<1.0").to_range().is_empty
         True
-        >>> SpecifierSet("===wat").to_range() is None
-        True
+        >>> SpecifierSet("===wat").to_range()._arbitrary
+        'wat'
         """
         return VersionRange.from_specifier_set(self)
 
