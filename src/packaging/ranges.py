@@ -1034,29 +1034,38 @@ class VersionRange:
         return cls._build(())
 
     @classmethod
-    def unbounded(cls) -> VersionRange:
-        """Return the unbounded range — every PEP 440 version satisfies it.
+    def full(cls) -> VersionRange:
+        """Return the full range — every PEP 440 version satisfies it.
 
         Equivalent to :meth:`from_specifier_set` on an empty
         :class:`SpecifierSet`, but produced without parsing.  Useful as
         the identity element when folding a sequence of ranges with
-        :meth:`intersect`.
+        :meth:`intersection`.
 
-        >>> "1.0" in VersionRange.unbounded()
+        Naming follows ``pubgrub-rs``'s ``Ranges::full()`` and uv's
+        ``version-ranges`` crate; ``empty`` and ``full`` are the
+        canonical set-theoretic identity pair.
+
+        >>> "1.0" in VersionRange.full()
         True
-        >>> VersionRange.unbounded().is_empty
+        >>> VersionRange.full().is_empty
         False
         """
         return cls._build(_FULL_RANGE)
 
     @classmethod
-    def exact(cls, version: Version | str) -> VersionRange:
+    def singleton(cls, version: Version | str) -> VersionRange:
         """Return the range that contains only *version*.
 
         *version* may be a :class:`~packaging.version.Version` or a
         string parseable as one.
 
-        >>> r = VersionRange.exact("1.2.3")
+        Naming follows ``pubgrub-rs``'s ``Ranges::singleton(v)`` and uv;
+        ``singleton`` is unambiguous about the set semantics, while
+        ``exact`` could be confused with the ``==V`` specifier (which
+        differs by also matching ``V+local``).
+
+        >>> r = VersionRange.singleton("1.2.3")
         >>> "1.2.3" in r
         True
         >>> "1.2.4" in r
@@ -1071,13 +1080,16 @@ class VersionRange:
         upper = _UpperBound(version, True)
         return cls._build(((lower, upper),))
 
-    def intersect(self, other: VersionRange) -> VersionRange:
+    def intersection(self, other: VersionRange) -> VersionRange:
         """Range containing exactly the versions in both *self* and *other*.
+
+        Mirrors :meth:`set.intersection` and ``pubgrub-rs``'s
+        ``Ranges::intersection``.
 
         >>> a = VersionRange.from_specifier_set(SpecifierSet(">=1.0"))
         >>> b = VersionRange.from_specifier_set(SpecifierSet("<2.0"))
         >>> ab = VersionRange.from_specifier_set(SpecifierSet(">=1.0,<2.0"))
-        >>> a.intersect(b) == ab
+        >>> a.intersection(b) == ab
         True
         """
         return self._build(tuple(_intersect_ranges(self._bounds, other._bounds)))
@@ -1089,8 +1101,8 @@ class VersionRange:
         the same sorted, non-overlapping invariant the rest of the
         module relies on.
 
-        >>> a = VersionRange.exact("1.0")
-        >>> b = VersionRange.exact("2.0")
+        >>> a = VersionRange.singleton("1.0")
+        >>> b = VersionRange.singleton("2.0")
         >>> "1.0" in a.union(b)
         True
         >>> "2.0" in a.union(b)
@@ -1104,7 +1116,7 @@ class VersionRange:
         """Range containing every version *not* in *self*.
 
         Inverts a range so that ``r.complement().complement() == r``.
-        The complement of the unbounded range is empty, and vice versa.
+        The complement of the full range is empty, and vice versa.
 
         >>> r = VersionRange.from_specifier(Specifier(">=1.0"))
         >>> "0.5" in r.complement()
@@ -1117,7 +1129,7 @@ class VersionRange:
         return self._build(tuple(_complement_ranges(self._bounds)))
 
     def __and__(self, other: object) -> VersionRange:
-        """Operator alias for :meth:`intersect`.
+        """Operator alias for :meth:`intersection`.
 
         >>> a = VersionRange.from_specifier(Specifier(">=1.0"))
         >>> b = VersionRange.from_specifier(Specifier("<2.0"))
@@ -1126,13 +1138,13 @@ class VersionRange:
         """
         if not isinstance(other, VersionRange):
             return NotImplemented
-        return self.intersect(other)
+        return self.intersection(other)
 
     def __or__(self, other: object) -> VersionRange:
         """Operator alias for :meth:`union`.
 
-        >>> a = VersionRange.exact("1.0")
-        >>> b = VersionRange.exact("2.0")
+        >>> a = VersionRange.singleton("1.0")
+        >>> b = VersionRange.singleton("2.0")
         >>> "1.0" in (a | b) and "2.0" in (a | b)
         True
         """
@@ -1261,7 +1273,7 @@ class VersionRange:
                 if result is None:
                     result = sub
                 else:
-                    result = result.intersect(sub)
+                    result = result.intersection(sub)
                     if result.is_empty:
                         break  # empty intersection — already unsatisfiable.
             assert result is not None  # ``_specs`` is non-empty above.

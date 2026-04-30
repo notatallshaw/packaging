@@ -49,14 +49,14 @@ instance and never mutates its inputs.
 
     >>> ge1 = VersionRange.from_specifier(Specifier(">=1.0"))
     >>> lt2 = VersionRange.from_specifier(Specifier("<2.0"))
-    >>> "1.5" in ge1.intersect(lt2)
+    >>> "1.5" in ge1.intersection(lt2)
     True
     >>> # Operator aliases are equivalent to the named methods.
-    >>> ge1.intersect(lt2) == (ge1 & lt2)
+    >>> ge1.intersection(lt2) == (ge1 & lt2)
     True
     >>> # Unions collapse touching or overlapping intervals.
-    >>> a = VersionRange.exact("1.0")
-    >>> b = VersionRange.exact("2.0")
+    >>> a = VersionRange.singleton("1.0")
+    >>> b = VersionRange.singleton("2.0")
     >>> "1.0" in a.union(b) and "2.0" in a.union(b)
     True
     >>> # Complement inverts the set; ``r.complement().complement() == r``.
@@ -65,9 +65,9 @@ instance and never mutates its inputs.
     >>> # Identity factories don't require a SpecifierSet round-trip.
     >>> VersionRange.empty().is_empty
     True
-    >>> "1.0" in VersionRange.unbounded()
+    >>> "1.0" in VersionRange.full()
     True
-    >>> r3 = VersionRange.exact("3.0")
+    >>> r3 = VersionRange.singleton("3.0")
     >>> "3.0" in r3 and "3.1" not in r3
     True
 

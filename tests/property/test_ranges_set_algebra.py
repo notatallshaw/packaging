@@ -40,9 +40,9 @@ def _to_range(spec_set: SpecifierSet) -> VersionRange:
 @SETTINGS
 def test_intersect_with_unbounded_is_identity(spec_set: SpecifierSet) -> None:
     r = _to_range(spec_set)
-    u = VersionRange.unbounded()
-    assert r.intersect(u) == r
-    assert u.intersect(r) == r
+    u = VersionRange.full()
+    assert r.intersection(u) == r
+    assert u.intersection(r) == r
 
 
 @given(spec_set=specifier_sets())
@@ -59,15 +59,15 @@ def test_union_with_empty_is_identity(spec_set: SpecifierSet) -> None:
 def test_intersect_with_empty_is_empty(spec_set: SpecifierSet) -> None:
     r = _to_range(spec_set)
     e = VersionRange.empty()
-    assert r.intersect(e) == e
-    assert e.intersect(r) == e
+    assert r.intersection(e) == e
+    assert e.intersection(r) == e
 
 
 @given(spec_set=specifier_sets())
 @SETTINGS
 def test_union_with_unbounded_is_unbounded(spec_set: SpecifierSet) -> None:
     r = _to_range(spec_set)
-    u = VersionRange.unbounded()
+    u = VersionRange.full()
     assert r.union(u) == u
     assert u.union(r) == u
 
@@ -77,7 +77,7 @@ def test_union_with_unbounded_is_unbounded(spec_set: SpecifierSet) -> None:
 def test_idempotence(spec_set: SpecifierSet) -> None:
     r = _to_range(spec_set)
     assert r.union(r) == r
-    assert r.intersect(r) == r
+    assert r.intersection(r) == r
 
 
 @given(a=specifier_sets(), b=specifier_sets())
@@ -91,7 +91,7 @@ def test_union_commutative(a: SpecifierSet, b: SpecifierSet) -> None:
 @SETTINGS
 def test_intersect_commutative(a: SpecifierSet, b: SpecifierSet) -> None:
     ra, rb = _to_range(a), _to_range(b)
-    assert ra.intersect(rb) == rb.intersect(ra)
+    assert ra.intersection(rb) == rb.intersection(ra)
 
 
 @given(a=specifier_sets(), b=specifier_sets(), c=specifier_sets())
@@ -107,7 +107,7 @@ def test_intersect_associative(
     a: SpecifierSet, b: SpecifierSet, c: SpecifierSet
 ) -> None:
     ra, rb, rc = _to_range(a), _to_range(b), _to_range(c)
-    assert ra.intersect(rb).intersect(rc) == ra.intersect(rb.intersect(rc))
+    assert ra.intersection(rb).intersection(rc) == ra.intersection(rb.intersection(rc))
 
 
 @given(spec_set=specifier_sets())
@@ -123,22 +123,22 @@ def test_complement_partitions(spec_set: SpecifierSet) -> None:
     r = _to_range(spec_set)
     c = r.complement()
     # r and ~r are disjoint and together cover the universe.
-    assert r.intersect(c).is_empty
-    assert r.union(c) == VersionRange.unbounded()
+    assert r.intersection(c).is_empty
+    assert r.union(c) == VersionRange.full()
 
 
 @given(a=specifier_sets(), b=specifier_sets())
 @SETTINGS
 def test_de_morgan_intersect(a: SpecifierSet, b: SpecifierSet) -> None:
     ra, rb = _to_range(a), _to_range(b)
-    assert (ra.intersect(rb)).complement() == ra.complement().union(rb.complement())
+    assert (ra.intersection(rb)).complement() == ra.complement().union(rb.complement())
 
 
 @given(a=specifier_sets(), b=specifier_sets())
 @SETTINGS
 def test_de_morgan_union(a: SpecifierSet, b: SpecifierSet) -> None:
     ra, rb = _to_range(a), _to_range(b)
-    assert (ra.union(rb)).complement() == ra.complement().intersect(rb.complement())
+    assert (ra.union(rb)).complement() == ra.complement().intersection(rb.complement())
 
 
 @given(a=specifier_sets(), b=specifier_sets(), c=specifier_sets())
@@ -147,8 +147,8 @@ def test_intersect_distributes_over_union(
     a: SpecifierSet, b: SpecifierSet, c: SpecifierSet
 ) -> None:
     ra, rb, rc = _to_range(a), _to_range(b), _to_range(c)
-    lhs = ra.intersect(rb.union(rc))
-    rhs = ra.intersect(rb).union(ra.intersect(rc))
+    lhs = ra.intersection(rb.union(rc))
+    rhs = ra.intersection(rb).union(ra.intersection(rc))
     assert lhs == rhs
 
 
@@ -158,8 +158,8 @@ def test_union_distributes_over_intersect(
     a: SpecifierSet, b: SpecifierSet, c: SpecifierSet
 ) -> None:
     ra, rb, rc = _to_range(a), _to_range(b), _to_range(c)
-    lhs = ra.union(rb.intersect(rc))
-    rhs = ra.union(rb).intersect(ra.union(rc))
+    lhs = ra.union(rb.intersection(rc))
+    rhs = ra.union(rb).intersection(ra.union(rc))
     assert lhs == rhs
 
 
@@ -173,7 +173,7 @@ def test_operator_aliases(spec_set: SpecifierSet) -> None:
     """
     r = _to_range(spec_set)
     other = _to_range(SpecifierSet(">=1.0,<2.0"))
-    assert (r & other) == r.intersect(other)
+    assert (r & other) == r.intersection(other)
     assert (r | other) == r.union(other)
     assert (~r) == r.complement()
 
@@ -183,7 +183,7 @@ def test_operator_aliases(spec_set: SpecifierSet) -> None:
 def test_membership_consistent_with_intersect(a: SpecifierSet, b: SpecifierSet) -> None:
     """``v in (a & b)`` iff ``v in a`` AND ``v in b`` for every version."""
     ra, rb = _to_range(a), _to_range(b)
-    intersection = ra.intersect(rb)
+    intersection = ra.intersection(rb)
     for v in VERSION_POOL:
         assert (v in intersection) == ((v in ra) and (v in rb))
 
@@ -211,13 +211,13 @@ def test_membership_consistent_with_complement(spec_set: SpecifierSet) -> None:
 @given(spec_set=specifier_sets())
 @SETTINGS
 def test_exact_singleton_membership(spec_set: SpecifierSet) -> None:
-    """``VersionRange.exact(v)`` contains only ``v`` and no other version."""
+    """``VersionRange.singleton(v)`` contains only ``v`` and no other version."""
     r = _to_range(spec_set)
     for v in VERSION_POOL:
-        exact = VersionRange.exact(v)
+        exact = VersionRange.singleton(v)
         assert v in exact
         # ``v`` is in (r & exact) iff v in r.
-        assert (v in r.intersect(exact)) == (v in r)
+        assert (v in r.intersection(exact)) == (v in r)
 
 
 @given(spec_set=specifier_sets())
@@ -235,7 +235,7 @@ def test_hash_equality_consistency(spec_set: SpecifierSet) -> None:
 def test_intersect_subset_of_each(a: SpecifierSet, b: SpecifierSet) -> None:
     """The intersection is a subset of each input."""
     ra, rb = _to_range(a), _to_range(b)
-    inter = ra.intersect(rb)
+    inter = ra.intersection(rb)
     for v in VERSION_POOL:
         if v in inter:
             assert v in ra
@@ -259,8 +259,8 @@ def test_complement_is_empty_iff_unbounded(spec_set: SpecifierSet) -> None:
     """``~r`` is empty exactly when ``r`` covers everything."""
     r = _to_range(spec_set)
     if r.complement().is_empty:
-        assert r == VersionRange.unbounded()
-    if r == VersionRange.unbounded():
+        assert r == VersionRange.full()
+    if r == VersionRange.full():
         assert r.complement().is_empty
 
 
@@ -271,8 +271,8 @@ def test_exact_equals_singleton_intersection(
 ) -> None:
     """``r & exact(v)`` is non-empty iff v is in r — and equals exact(v) when so."""
     r = _to_range(versions)
-    e = VersionRange.exact(v)
-    inter = r.intersect(e)
+    e = VersionRange.singleton(v)
+    inter = r.intersection(e)
     if v in r:
         assert inter == e
     else:

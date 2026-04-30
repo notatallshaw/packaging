@@ -10,11 +10,12 @@ Features:
   specifier accepts. Direct construction is not supported; instances are
   produced by ``VersionRange.from_specifier`` and
   ``VersionRange.from_specifier_set``.
-* ``VersionRange`` is closed under set algebra: in addition to ``intersect``
-  it now exposes ``union`` and ``complement`` methods (with ``&``, ``|``,
-  ``~`` operator aliases), plus ``empty()``, ``unbounded()``, and
-  ``exact(version)`` factory classmethods so callers can build the
-  identity / singleton ranges without parsing.
+* ``VersionRange`` is closed under set algebra: ``intersection``, ``union``,
+  and ``complement`` methods (with ``&``, ``|``, ``~`` operator aliases),
+  plus ``empty()``, ``full()``, and ``singleton(version)`` factory
+  classmethods so callers can build identity / single-version ranges
+  without parsing.  Vocabulary follows ``pubgrub-rs`` /
+  ``version-ranges`` and Python's stdlib ``set`` API.
 
 Performance:
 

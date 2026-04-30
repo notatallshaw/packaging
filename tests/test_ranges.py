@@ -482,10 +482,10 @@ class TestEmptyFactory:
         assert "0" not in r
 
     def test_intersect_with_empty_is_empty(self) -> None:
-        any_r = VersionRange.unbounded()
+        any_r = VersionRange.full()
         e = VersionRange.empty()
-        assert any_r.intersect(e).is_empty
-        assert e.intersect(any_r).is_empty
+        assert any_r.intersection(e).is_empty
+        assert e.intersection(any_r).is_empty
 
     def test_union_with_empty_is_self(self) -> None:
         a = VersionRange.from_specifier(Specifier(">=1.0"))
@@ -495,7 +495,7 @@ class TestEmptyFactory:
         assert e.union(a) == a
 
     def test_complement_of_empty_is_unbounded(self) -> None:
-        assert VersionRange.empty().complement() == VersionRange.unbounded()
+        assert VersionRange.empty().complement() == VersionRange.full()
 
     def test_equal_across_constructions(self) -> None:
         a = VersionRange.empty()
@@ -506,16 +506,16 @@ class TestEmptyFactory:
 
 
 class TestUnboundedFactory:
-    """``VersionRange.unbounded`` builds the multiplicative identity for intersect."""
+    """``VersionRange.full`` builds the multiplicative identity for intersect."""
 
     def test_returns_full_range(self) -> None:
-        r = VersionRange.unbounded()
+        r = VersionRange.full()
         assert isinstance(r, VersionRange)
         assert not r.is_empty
         assert bool(r)
 
     def test_contains_anything_parseable(self) -> None:
-        r = VersionRange.unbounded()
+        r = VersionRange.full()
         assert "0" in r
         assert "999.999.999" in r
         assert "1.0a1" in r
@@ -524,37 +524,35 @@ class TestUnboundedFactory:
     def test_intersect_with_unbounded_is_self(self) -> None:
         a = VersionRange.from_specifier_set(SpecifierSet(">=1.0,<2.0"))
         assert a is not None
-        u = VersionRange.unbounded()
-        assert a.intersect(u) == a
-        assert u.intersect(a) == a
+        u = VersionRange.full()
+        assert a.intersection(u) == a
+        assert u.intersection(a) == a
 
     def test_union_with_unbounded_is_unbounded(self) -> None:
         a = VersionRange.from_specifier(Specifier(">=1.0"))
         assert a is not None
-        u = VersionRange.unbounded()
+        u = VersionRange.full()
         assert a.union(u) == u
         assert u.union(a) == u
 
     def test_complement_of_unbounded_is_empty(self) -> None:
-        assert VersionRange.unbounded().complement().is_empty
+        assert VersionRange.full().complement().is_empty
 
     def test_equal_to_empty_specifier_set(self) -> None:
-        assert VersionRange.unbounded() == VersionRange.from_specifier_set(
-            SpecifierSet("")
-        )
+        assert VersionRange.full() == VersionRange.from_specifier_set(SpecifierSet(""))
 
 
 class TestExactFactory:
-    """``VersionRange.exact`` builds the singleton range."""
+    """``VersionRange.singleton`` builds the singleton range."""
 
     def test_from_string(self) -> None:
-        r = VersionRange.exact("1.2.3")
+        r = VersionRange.singleton("1.2.3")
         assert "1.2.3" in r
         assert "1.2.4" not in r
         assert "1.2.2" not in r
 
     def test_from_version_object(self) -> None:
-        r = VersionRange.exact(Version("1.2.3"))
+        r = VersionRange.singleton(Version("1.2.3"))
         assert "1.2.3" in r
         assert "1.2.4" not in r
 
@@ -562,38 +560,38 @@ class TestExactFactory:
         from packaging.version import InvalidVersion  # noqa: PLC0415
 
         with pytest.raises(InvalidVersion):
-            VersionRange.exact("not-a-version")
+            VersionRange.singleton("not-a-version")
 
     def test_equal_to_eq_specifier(self) -> None:
         # ``==1.2.3`` matches ``1.2.3`` and ``1.2.3+local``; ``exact``
         # is the strict singleton — not the same range.
-        exact = VersionRange.exact("1.2.3")
+        exact = VersionRange.singleton("1.2.3")
         eq_spec = VersionRange.from_specifier(Specifier("==1.2.3"))
         assert eq_spec is not None
         assert "1.2.3+local" in eq_spec
         assert "1.2.3+local" not in exact
 
     def test_intersect_disjoint_exacts_is_empty(self) -> None:
-        a = VersionRange.exact("1.0")
-        b = VersionRange.exact("2.0")
-        assert a.intersect(b).is_empty
+        a = VersionRange.singleton("1.0")
+        b = VersionRange.singleton("2.0")
+        assert a.intersection(b).is_empty
 
     def test_intersect_equal_exacts_is_self(self) -> None:
-        a = VersionRange.exact("1.0")
-        b = VersionRange.exact("1.0")
-        assert a.intersect(b) == a
+        a = VersionRange.singleton("1.0")
+        b = VersionRange.singleton("1.0")
+        assert a.intersection(b) == a
 
     def test_hashable(self) -> None:
-        a = VersionRange.exact("1.0")
-        b = VersionRange.exact("1.0")
+        a = VersionRange.singleton("1.0")
+        b = VersionRange.singleton("1.0")
         assert hash(a) == hash(b)
-        assert len({a, b, VersionRange.exact("2.0")}) == 2
+        assert len({a, b, VersionRange.singleton("2.0")}) == 2
 
 
 class TestUnion:
     def test_disjoint_exacts(self) -> None:
-        a = VersionRange.exact("1.0")
-        b = VersionRange.exact("2.0")
+        a = VersionRange.singleton("1.0")
+        b = VersionRange.singleton("2.0")
         u = a.union(b)
         assert "1.0" in u
         assert "2.0" in u
@@ -623,9 +621,9 @@ class TestUnion:
         assert a.union(b) == b.union(a)
 
     def test_union_is_associative(self) -> None:
-        a = VersionRange.exact("1.0")
-        b = VersionRange.exact("2.0")
-        c = VersionRange.exact("3.0")
+        a = VersionRange.singleton("1.0")
+        b = VersionRange.singleton("2.0")
+        c = VersionRange.singleton("3.0")
         assert a.union(b).union(c) == a.union(b.union(c))
 
     def test_union_of_neg_complementary_ranges_covers_all(self) -> None:
@@ -641,8 +639,8 @@ class TestUnion:
 
     def test_union_preserves_disjoint_repr_count(self) -> None:
         # Two non-adjacent ranges keep both intervals.
-        a = VersionRange.exact("1.0")
-        b = VersionRange.exact("3.0")
+        a = VersionRange.singleton("1.0")
+        b = VersionRange.singleton("3.0")
         u = a.union(b)
         assert " | " in repr(u)
 
@@ -687,10 +685,10 @@ class TestUnion:
 
 class TestComplement:
     def test_complement_of_unbounded(self) -> None:
-        assert VersionRange.unbounded().complement().is_empty
+        assert VersionRange.full().complement().is_empty
 
     def test_complement_of_empty(self) -> None:
-        assert VersionRange.empty().complement() == VersionRange.unbounded()
+        assert VersionRange.empty().complement() == VersionRange.full()
 
     def test_double_complement_is_identity(self) -> None:
         for spec_str in [">=1.0", "<2.0", ">=1.0,<2.0", "!=1.5", "==1.0", ">1.0,<=2.0"]:
@@ -702,13 +700,13 @@ class TestComplement:
         for spec in [">=1.0", "<2.0", ">=1.0,<2.0", "!=1.5"]:
             r = VersionRange.from_specifier_set(SpecifierSet(spec))
             assert r is not None
-            assert r.union(r.complement()) == VersionRange.unbounded()
+            assert r.union(r.complement()) == VersionRange.full()
 
     def test_intersect_with_complement_is_empty(self) -> None:
         for spec in [">=1.0", "<2.0", ">=1.0,<2.0", "!=1.5"]:
             r = VersionRange.from_specifier_set(SpecifierSet(spec))
             assert r is not None
-            assert r.intersect(r.complement()).is_empty
+            assert r.intersection(r.complement()).is_empty
 
     def test_complement_of_lower_bound(self) -> None:
         r = VersionRange.from_specifier(Specifier(">=2.0"))
@@ -804,11 +802,11 @@ class TestOperatorAliases:
         b = VersionRange.from_specifier(Specifier("<2.0"))
         assert a is not None
         assert b is not None
-        assert (a & b) == a.intersect(b)
+        assert (a & b) == a.intersection(b)
 
     def test_or_aliases_union(self) -> None:
-        a = VersionRange.exact("1.0")
-        b = VersionRange.exact("2.0")
+        a = VersionRange.singleton("1.0")
+        b = VersionRange.singleton("2.0")
         assert (a | b) == a.union(b)
 
     def test_invert_aliases_complement(self) -> None:
@@ -836,7 +834,7 @@ class TestOperatorAliases:
         # ``(>=1) & (<2) | (==3)``
         ge1 = VersionRange.from_specifier(Specifier(">=1.0"))
         lt2 = VersionRange.from_specifier(Specifier("<2.0"))
-        eq3 = VersionRange.exact("3.0")
+        eq3 = VersionRange.singleton("3.0")
         assert ge1 is not None
         assert lt2 is not None
         result = (ge1 & lt2) | eq3

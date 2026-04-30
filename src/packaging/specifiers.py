@@ -1082,7 +1082,7 @@ class SpecifierSet(BaseSpecifier):
         if version_range is None and self._has_arbitrary:
             rangelike = [r for s in self._specs if (r := s._range) is not None]
             if rangelike:
-                version_range = functools.reduce(VersionRange.intersect, rangelike)
+                version_range = functools.reduce(VersionRange.intersection, rangelike)
 
         range_unsat = version_range is not None and version_range.is_unsatisfiable(
             prereleases=self.prereleases
