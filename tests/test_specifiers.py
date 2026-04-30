@@ -929,21 +929,11 @@ class TestSpecifier:
 
         assert spec.contains(version, prereleases=contains_pre) == expected
 
-        # Range equivalence: replicate the same prereleases resolution
-        # chain as :meth:`Specifier.filter` -- explicit ``contains``
-        # arg first, else explicit constructor arg (``spec_pre``),
-        # else auto-detected ``True`` for prerelease-bearing
-        # specifiers, else ``None`` for the PEP 440 default.
+        # Range equivalence: use ``_resolve_prereleases`` so we don't
+        # duplicate ``Specifier.filter``'s resolution chain in tests.
         rng = spec.to_range()
         if rng is not None:
-            if contains_pre is not None:
-                effective_pre: bool | None = contains_pre
-            elif spec_pre is not None:
-                effective_pre = spec_pre
-            elif spec.prereleases:
-                effective_pre = True
-            else:
-                effective_pre = None
+            effective_pre = spec._resolve_prereleases(contains_pre)
             assert (
                 bool(list(rng.filter([version], prereleases=effective_pre))) == expected
             )
@@ -1033,23 +1023,11 @@ class TestSpecifier:
 
         # Range equivalence: ``Specifier.to_range`` is None for ``===``
         # (arbitrary equality) and for those cases the spec form is
-        # authoritative.  Otherwise ``rng.filter`` must produce the
-        # same list once the prereleases fallback chain is replicated:
-        # explicit filter argument; else explicit constructor argument
-        # (``specifier_prereleases``); else, if the spec auto-detects
-        # ``True`` (e.g. ``>=1.0.dev1``), force ``True``; else ``None``
-        # so PEP 440 default applies.  This mirrors the resolution
-        # inside :meth:`Specifier.filter`.
+        # authoritative.  Otherwise ``Specifier._resolve_prereleases``
+        # gives us the same value the spec form's filter would use.
         rng = spec.to_range()
         if rng is not None:
-            if prereleases is not None:
-                effective_pre: bool | None = prereleases
-            elif specifier_prereleases is not None:
-                effective_pre = specifier_prereleases
-            elif spec.prereleases:
-                effective_pre = True
-            else:
-                effective_pre = None
+            effective_pre = spec._resolve_prereleases(prereleases)
             range_result = list(rng.filter(input, prereleases=effective_pre))
             assert range_result == expected
 
@@ -1614,22 +1592,13 @@ class TestSpecifierSet:
 
         assert spec.contains(version, **kwargs) == expected
 
-        # Range equivalence: ``installed=True`` upgrades a pre-release
-        # candidate to ``prereleases=True`` inside ``contains``.
-        # Reproduce that resolution explicitly for ``rng.filter``.
+        # Range equivalence: ``SpecifierSet._resolve_prereleases`` knows
+        # about the ``installed=True`` upgrade and the per-spec chain.
         rng = spec.to_range()
         assert rng is not None
-        v = Version(version)
-        if installed and v.is_prerelease:
-            effective_pre: bool | None = True
-        elif contains_prereleases is not None:
-            effective_pre = contains_prereleases
-        elif spec_prereleases is not None:
-            effective_pre = spec_prereleases
-        elif spec.prereleases:
-            effective_pre = True
-        else:
-            effective_pre = None
+        effective_pre = spec._resolve_prereleases(
+            contains_prereleases, item=version, installed=bool(installed)
+        )
         assert bool(list(rng.filter([version], prereleases=effective_pre))) == expected
 
         spec = SpecifierSet("~=1.0", prereleases=False)
@@ -1787,10 +1756,12 @@ class TestSpecifierSet:
         # Range equivalence: ``to_range`` is None for any spec
         # containing ``===``; for those cases the spec form is
         # authoritative.  For non-arbitrary specifier sets, replicate
-        # the prereleases resolution chain (filter arg, else
-        # constructor arg, else auto-detect=True, else None).  The
-        # empty SpecifierSet's range admits only parseable versions,
-        # so unparseable strings in ``expected`` are dropped.
+        # ``SpecifierSet._resolve_prereleases`` exposes the same chain
+        # ``filter`` uses internally, so tests don't duplicate it.
+        # The empty SpecifierSet's range still admits only parseable
+        # versions; the spec form lets arbitrary strings through, so
+        # we drop unparseable strings from ``expected`` for the range
+        # comparison.
         rng = spec.to_range()
         if rng is not None:
             from packaging.version import InvalidVersion  # noqa: PLC0415
@@ -1804,14 +1775,7 @@ class TestSpecifierSet:
                     return False
                 return True
 
-            if prereleases is not None:
-                effective_pre: bool | None = prereleases
-            elif specifier_prereleases is not None:
-                effective_pre = specifier_prereleases
-            elif spec.prereleases:
-                effective_pre = True
-            else:
-                effective_pre = None
+            effective_pre = spec._resolve_prereleases(prereleases)
             range_result = list(rng.filter(input, prereleases=effective_pre))
             assert range_result == [v for v in expected if _parses(v)]
 
@@ -2128,15 +2092,10 @@ class TestSpecifierSet:
 
         assert result == expected
 
-        # Range equivalence: same prereleases resolution chain.
+        # Range equivalence via ``SpecifierSet._resolve_prereleases``.
         rng = spec.to_range()
         assert rng is not None
-        if prereleases is not None:
-            effective_pre: bool | None = prereleases
-        elif spec.prereleases:
-            effective_pre = True
-        else:
-            effective_pre = None
+        effective_pre = spec._resolve_prereleases(prereleases)
         assert list(rng.filter(input, prereleases=effective_pre)) == expected
 
     @pytest.mark.parametrize(
@@ -2300,15 +2259,11 @@ class TestSpecifierSet:
         kwargs = {"prereleases": prereleases} if prereleases is not None else {}
         assert spec.contains(version, **kwargs) == expected
 
-        # Range equivalence via singleton-list filter.
+        # Range equivalence via singleton-list filter, with the
+        # prereleases value resolved through ``_resolve_prereleases``.
         rng = spec.to_range()
         assert rng is not None
-        if prereleases is not None:
-            effective_pre: bool | None = prereleases
-        elif spec.prereleases:
-            effective_pre = True
-        else:
-            effective_pre = None
+        effective_pre = spec._resolve_prereleases(prereleases)
         assert bool(list(rng.filter([version], prereleases=effective_pre))) == expected
 
     @pytest.mark.parametrize(

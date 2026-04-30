@@ -745,19 +745,34 @@ class Specifier(BaseSpecifier):
                 yield item
             return
 
-        # Resolve the prereleases value, leaving ``None`` when the
-        # caller wants the PEP 440 default (handled inline by
-        # :meth:`VersionRange.filter`).
-        if prereleases is None:
-            if self._prereleases is not None:
-                prereleases = self._prereleases
-            elif self.prereleases:
-                prereleases = True
+        prereleases = self._resolve_prereleases(prereleases)
 
         version_range = self._range_cache
         if version_range is None:
             version_range = VersionRange.from_specifier(self)
         yield from version_range.filter(iterable, key, prereleases)  # type: ignore[union-attr]
+
+    def _resolve_prereleases(self, prereleases: bool | None) -> bool | None:
+        """Compute the effective ``prereleases`` value the range filter
+        should see.
+
+        Mirrors the chain :meth:`filter` and :meth:`contains` use
+        internally: explicit caller argument wins; otherwise, fall back
+        to the explicit constructor value (``self._prereleases``); else
+        fall back to the auto-detected ``self.prereleases`` *only when
+        it is True* (an auto-detected ``False`` does not propagate, so
+        ``filter`` keeps PEP 440 default behaviour for non-pre
+        specifiers).  Exposed so callers driving :meth:`VersionRange.filter`
+        directly can replicate the behaviour without duplicating the
+        logic.
+        """
+        if prereleases is not None:
+            return prereleases
+        if self._prereleases is not None:
+            return self._prereleases
+        if self.prereleases:
+            return True
+        return None
 
 
 class SpecifierSet(BaseSpecifier):
@@ -1262,6 +1277,38 @@ class SpecifierSet(BaseSpecifier):
         key: None = ...,
     ) -> Iterator[UnparsedVersionVar]: ...
 
+    def _resolve_prereleases(
+        self,
+        prereleases: bool | None,
+        *,
+        item: UnparsedVersion | None = None,
+        installed: bool = False,
+    ) -> bool | None:
+        """Compute the effective ``prereleases`` value the range filter
+        should see for this :class:`SpecifierSet`.
+
+        Mirrors the chain :meth:`filter` and :meth:`contains` use
+        internally:
+
+        * If *installed* is set and *item* is a parseable pre-release
+          :class:`~packaging.version.Version`, the result is forced
+          to ``True`` (matches the ``installed=True`` upgrade in
+          :meth:`contains`).
+        * Else, the explicit *prereleases* argument wins.
+        * Else, ``self.prereleases`` (which already collapses the
+          explicit constructor value with the auto-detected one).
+
+        Exposed so callers driving :meth:`VersionRange.filter` directly
+        can match the spec form without duplicating the resolution.
+        """
+        if installed and item is not None:
+            parsed = _coerce_version(item)
+            if parsed is not None and parsed.is_prerelease:
+                return True
+        if prereleases is not None:
+            return prereleases
+        return self.prereleases
+
     @typing.overload
     def filter(
         self,
@@ -1317,8 +1364,7 @@ class SpecifierSet(BaseSpecifier):
         >>> list(SpecifierSet("").filter(["1.3", "1.5a1"], prereleases=True))
         ['1.3', '1.5a1']
         """
-        if prereleases is None and self.prereleases is not None:
-            prereleases = self.prereleases
+        prereleases = self._resolve_prereleases(prereleases)
 
         if self._specs:
             if not self._has_arbitrary:
