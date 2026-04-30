@@ -100,48 +100,6 @@ def _validate_pre(pre: object, /) -> TypeGuard[bool | None]:
     return pre is None or isinstance(pre, bool)
 
 
-def _pep440_filter_prereleases(
-    iterable: Iterable[Any], key: Callable[[Any], UnparsedVersion] | None
-) -> Iterator[Any]:
-    """Filter per PEP 440: exclude pre-releases unless no finals exist.
-
-    Used only on paths where items may include unparsable strings —
-    the ``===`` arbitrary path and the empty-:class:`SpecifierSet`
-    path.  The range path handles PEP 440 semantics inline in
-    :func:`packaging.ranges._filter_by_ranges`.
-    """
-    all_nonfinal: list[Any] = []
-    arbitrary_strings: list[Any] = []
-
-    found_final = False
-    for item in iterable:
-        parsed = _coerce_version(item if key is None else key(item))
-
-        if parsed is None:
-            # Arbitrary strings already passed all specifiers; whether
-            # they are pre-releases is unknowable, so treat them
-            # alongside pre-releases for buffering.
-            if found_final:
-                yield item
-            else:
-                arbitrary_strings.append(item)
-                all_nonfinal.append(item)
-            continue
-
-        if not parsed.is_prerelease:
-            if not found_final:
-                yield from arbitrary_strings
-                found_final = True
-            yield item
-            continue
-
-        if not found_final:
-            all_nonfinal.append(item)
-
-    if not found_final:
-        yield from all_nonfinal
-
-
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -728,26 +686,12 @@ class Specifier(BaseSpecifier):
         ... key=lambda x: x["ver"]))
         [{'ver': '1.3'}]
         """
-        if self.operator == "===":
-            # ``===`` is arbitrary-string equality.  Pre-releases are
-            # still respected when the string parses as a version.
-            if prereleases is None and self._prereleases is not None:
-                prereleases = self._prereleases
-            exclude_pre = prereleases is False
-            spec_str = self.version
-            for item in iterable:
-                raw = item if key is None else key(item)
-                if str(raw).lower() != spec_str.lower():
-                    continue
-                if exclude_pre:
-                    parsed = _coerce_version(raw)
-                    if parsed is not None and parsed.is_prerelease:
-                        continue
-                yield item
-            return
-
         prereleases = self._resolve_prereleases(prereleases)
 
+        # The cached range encodes ``===`` (arbitrary-equality) too --
+        # see the :class:`~packaging.ranges.VersionRange` "``===``
+        # carve-out".  Read the cache slot directly to skip the
+        # ``_range`` property descriptor.
         version_range = self._range_cache
         if version_range is None:
             version_range = VersionRange.from_specifier(self)
@@ -798,7 +742,6 @@ class SpecifierSet(BaseSpecifier):
     __slots__ = (
         "_auto_prereleases",
         "_canonicalized",
-        "_has_arbitrary",
         "_is_unsatisfiable",
         "_prereleases",
         "_range_cache",
@@ -834,13 +777,8 @@ class SpecifierSet(BaseSpecifier):
         if isinstance(specifiers, str):
             split_specifiers = [s.strip() for s in specifiers.split(",") if s.strip()]
             self._specs: tuple[Specifier, ...] = tuple(map(Specifier, split_specifiers))
-            # Fast substring check; avoids iterating parsed specs.
-            self._has_arbitrary = "===" in specifiers
         else:
             self._specs = tuple(specifiers)
-            # Substring check works for both Specifier objects and
-            # plain strings (setuptools passes lists of strings).
-            self._has_arbitrary = any("===" in str(s) for s in self._specs)
 
         self._canonicalized = len(self._specs) <= 1
         self._is_unsatisfiable: bool | None = None
@@ -909,7 +847,6 @@ class SpecifierSet(BaseSpecifier):
                     self._specs = specs
                     self._prereleases = prereleases
                     self._canonicalized = len(specs) <= 1
-                    self._has_arbitrary = any("===" in str(s) for s in specs)
                     return
             if len(state) == 2 and isinstance(state[1], dict):
                 # 26.0-26.1 format: ``(None, {slot: value})``.
@@ -927,7 +864,6 @@ class SpecifierSet(BaseSpecifier):
                     self._specs = specs
                     self._prereleases = prereleases
                     self._canonicalized = len(self._specs) <= 1
-                    self._has_arbitrary = any("===" in str(s) for s in self._specs)
                     return
         if isinstance(state, dict):
             # <= 25.x format: plain ``__dict__``.
@@ -943,7 +879,6 @@ class SpecifierSet(BaseSpecifier):
                 self._specs = specs
                 self._prereleases = prereleases
                 self._canonicalized = len(self._specs) <= 1
-                self._has_arbitrary = any("===" in str(s) for s in self._specs)
                 return
 
         raise TypeError(f"Cannot restore SpecifierSet from {state!r}")
@@ -1003,7 +938,6 @@ class SpecifierSet(BaseSpecifier):
         specifier = SpecifierSet()
         specifier._specs = self._specs + other._specs
         specifier._canonicalized = len(specifier._specs) <= 1
-        specifier._has_arbitrary = self._has_arbitrary or other._has_arbitrary
 
         if self._prereleases is None or self._prereleases == other._prereleases:
             specifier._prereleases = other._prereleases
@@ -1179,50 +1113,18 @@ class SpecifierSet(BaseSpecifier):
         >>> SpecifierSet(">=1.0.0,!=1.0.1").contains("1.3.0a1", prereleases=True)
         True
         """
-        version = _coerce_version(item)
-
-        if version is not None and installed and version.is_prerelease:
-            prereleases = True
-
-        # When ``===`` is involved, fall back to the filter path so the
-        # raw string form drives the comparison (not the normalized
-        # :class:`Version`).
-        if self._has_arbitrary:
-            if version is None or not isinstance(item, Version):
-                check_item: UnparsedVersion = item
-            else:
-                check_item = version
-            return bool(list(self.filter([check_item], prereleases=prereleases)))
-
-        # No ``===`` in the set — the cached ranges are authoritative.
-        if not self._specs:
-            # Empty set: matches anything that isn't excluded by
-            # the explicit ``prereleases`` flag.
-            if prereleases is None:
-                prereleases = self._prereleases
-            if prereleases is False and version is not None and version.is_prerelease:
-                return False
-            return True
-
-        if version is None:
-            # Non-arbitrary specs cannot accept an unparsable string.
-            return False
-
-        if prereleases is None:
-            auto_pre = self.prereleases
-            if auto_pre is not None:
-                prereleases = auto_pre
-        if prereleases is False and version.is_prerelease:
-            return False
-
-        # Read the cache slot directly here; routing through the
-        # :attr:`_range` property would add descriptor-protocol overhead
-        # to every call.  ``_has_arbitrary`` was False above so the
-        # cached range, once built, is never ``None``.
-        version_range = self._range_cache
-        if version_range is None:
-            version_range = VersionRange.from_specifier_set(self)
-        return version in version_range  # type: ignore[operator]
+        # Reuse ``filter`` so the same admission rules drive both
+        # entry points: the empty-SpecifierSet and ``===`` carve-outs
+        # admit unparseable strings, and ``installed=True`` upgrades
+        # a pre-release item's prereleases flag uniformly.
+        # Reuse ``filter`` so the same admission rules drive both
+        # entry points: empty-SpecifierSet and ``===`` carve-outs admit
+        # unparseable strings, and ``installed=True`` upgrades a
+        # pre-release item's prereleases flag uniformly.
+        prereleases = self._resolve_prereleases(
+            prereleases, item=item, installed=bool(installed)
+        )
+        return bool(list(self.filter([item], prereleases=prereleases)))
 
     @typing.overload
     def filter(
@@ -1321,56 +1223,12 @@ class SpecifierSet(BaseSpecifier):
         """
         prereleases = self._resolve_prereleases(prereleases)
 
-        if self._specs:
-            if not self._has_arbitrary:
-                # No ``===``: use the cached range.  Read the slot
-                # directly to skip the ``_range`` property descriptor.
-                version_range = self._range_cache
-                if version_range is None:
-                    version_range = VersionRange.from_specifier_set(self)
-                # ``VersionRange.filter`` handles the PEP 440 ``None``
-                # mode inline; pass *prereleases* through directly.
-                return version_range.filter(  # type: ignore[union-attr]
-                    iterable, key, prereleases
-                )
-
-            # Set contains ``===``.
-            # Items here may not be parseable as PEP 440
-            # versions, so the :func:`_pep440_filter_prereleases`
-            # wrapper still applies for the ``None`` case.
-            resolve_pre = True if prereleases is None else prereleases
-            specs = self._specs
-            filtered: Iterator[Any] = (
-                item
-                for item in iterable
-                if all(
-                    s.contains(
-                        item if key is None else key(item),
-                        prereleases=resolve_pre,
-                    )
-                    for s in specs
-                )
-            )
-
-            if prereleases is not None:
-                return filtered
-
-            return _pep440_filter_prereleases(filtered, key)
-
-        # Empty SpecifierSet.
-        if prereleases is True:
-            return iter(iterable)
-
-        if prereleases is False:
-            return (
-                item
-                for item in iterable
-                if (
-                    (version := _coerce_version(item if key is None else key(item)))
-                    is None
-                    or not version.is_prerelease
-                )
-            )
-
-        # PEP 440 default: exclude pre-releases unless no final matches.
-        return _pep440_filter_prereleases(iterable, key)
+        # Read the cache slot directly to skip the ``_range`` property
+        # descriptor.  The range encodes every shape of this set: the
+        # empty SpecifierSet maps to the full range (admits arbitrary
+        # strings), ``===`` carries the literal in ``_arbitrary``, and
+        # ordinary specs land in the rangelike bounds.
+        version_range = self._range_cache
+        if version_range is None:
+            version_range = VersionRange.from_specifier_set(self)
+        return version_range.filter(iterable, key, prereleases)

@@ -1441,11 +1441,12 @@ class VersionRange:
         pre-releases are buffered and only emitted if no final release
         in *iterable* is in range.
 
-        For ``===`` carve-out ranges, items must string-match the
-        literal (case-insensitively) and -- when the string parses as
-        a :class:`Version` -- fall in the range bounds.  Items that
-        do not parse as PEP 440 versions still match an arbitrary-set
-        range when their string equals the literal.
+        Two carve-outs admit items that don't parse as PEP 440
+        versions, mirroring :class:`SpecifierSet`: the full range
+        admits any string (matches ``SpecifierSet("")``), and a ``===``
+        range admits items whose string equals the literal
+        case-insensitively (and falls in the rangelike bounds when
+        present).
 
         >>> r = VersionRange.from_specifier_set(SpecifierSet(">=1.0,<2.0"))
         >>> list(r.filter(["0.9", "1.5", "2.0"]))
@@ -1453,37 +1454,48 @@ class VersionRange:
         >>> arb = VersionRange.from_specifier(Specifier("===wat"))
         >>> list(arb.filter(["wat", "WAT", "other"]))
         ['wat', 'WAT']
+        >>> list(VersionRange.full().filter(["1.0", "not-a-version"]))
+        ['1.0', 'not-a-version']
         """
         if self._arbitrary is not None:
-            return self._filter_arbitrary(iterable, key, prereleases)
+            return self._filter_with_admission(iterable, key, prereleases)
+        if self._bounds == _FULL_RANGE:
+            # Full-range carve-out: admit any item, parseable or not,
+            # so behaviour matches ``SpecifierSet("").filter``.
+            return self._filter_with_admission(iterable, key, prereleases)
         return _filter_by_ranges(self._bounds, iterable, key, prereleases)
 
-    def _filter_arbitrary(
+    def _filter_with_admission(
         self,
         iterable: Iterable[Any],
         key: Callable[[Any], Version | str] | None,
         prereleases: bool | None,
     ) -> Iterator[Any]:
-        """Filter implementation for the ``===`` carve-out.
+        """Filter for ranges that admit unparseable strings.
 
-        Mirrors :meth:`Specifier.filter` for ``===`` but also gates on
-        the rangelike bounds when the range came from a SpecifierSet
-        that combined ``===`` with ordinary specifiers.  Layered atop
-        :func:`packaging.specifiers._pep440_filter_prereleases` for the
-        ``prereleases is None`` mode so unparseable strings buffer
+        Drives the ``===`` carve-out and the full-range carve-out.
+        Both share the same PEP 440 buffering shape as
+        :func:`packaging.specifiers._pep440_filter_prereleases`: in
+        ``prereleases is None`` mode unparseable strings buffer
         alongside pre-releases until a final candidate appears.
+
+        The carve-outs differ only in their admission predicate:
+        ``===`` requires a case-insensitive match against the literal
+        (plus an optional rangelike-bounds check); the full range
+        admits everything.
         """
-        assert self._arbitrary is not None
-        spec_lower = self._arbitrary.lower()
-
-        if not self._bounds:
-            return
-
-        full_bounds = self._bounds == _FULL_RANGE
+        if self._arbitrary is None:
+            full_bounds = True
+            spec_lower: str | None = None
+        else:
+            if not self._bounds:
+                return
+            full_bounds = self._bounds == _FULL_RANGE
+            spec_lower = self._arbitrary.lower()
 
         def admit(item: object) -> tuple[bool, Version | None]:
             raw = item if key is None else key(item)
-            if str(raw).lower() != spec_lower:
+            if spec_lower is not None and str(raw).lower() != spec_lower:
                 return False, None
             parsed = _coerce_version(raw)
             if (
@@ -1511,15 +1523,9 @@ class VersionRange:
                 yield item
             return
 
-        # PEP 440 default: yield finals immediately; buffer the
-        # rest until we know whether any final exists.  Mirrors
-        # :func:`packaging.specifiers._pep440_filter_prereleases`
-        # for the buffer/clear semantics.  In practice, every item
-        # that case-matches a single literal parses identically (PEP
-        # 440 parsing is case-insensitive), so the "parseable +
-        # unparseable in the same call" branches are defensive only;
-        # they only matter when a caller hand-builds a carve-out via
-        # :meth:`_build` with a deliberately inconsistent literal.
+        # PEP 440 default: yield finals immediately; buffer the rest
+        # until we know whether any final exists.  Mirrors
+        # :func:`packaging.specifiers._pep440_filter_prereleases`.
         all_nonfinal: list[Any] = []
         arbitrary_strings: list[Any] = []
         found_final = False
@@ -1528,7 +1534,7 @@ class VersionRange:
             if not ok:
                 continue
             if parsed is None:
-                if found_final:  # pragma: no cover
+                if found_final:
                     yield item
                 else:
                     arbitrary_strings.append(item)
@@ -1541,7 +1547,7 @@ class VersionRange:
                     found_final = True
                 yield item
                 continue
-            if not found_final:  # pragma: no branch
+            if not found_final:
                 all_nonfinal.append(item)
         if not found_final:
             yield from all_nonfinal
@@ -1953,8 +1959,10 @@ class VersionRange:
 
         *item* may be a :class:`~packaging.version.Version` or a string
         parseable as one.  Strings that do not parse as PEP 440
-        versions are not contained, except when this range came from a
-        ``===`` specifier and *item* string-matches the literal
+        versions are normally not contained, with two carve-outs that
+        admit arbitrary strings to match :class:`SpecifierSet` semantics:
+        the full range admits any string (mirrors ``SpecifierSet("")``),
+        and a ``===`` range admits items whose string equals the literal
         case-insensitively (the ``===`` carve-out -- see the class
         docstring).
 
@@ -1970,6 +1978,9 @@ class VersionRange:
         >>> "wat" in arb
         True
         >>> "WAT" in arb
+        True
+        >>> # Full range admits any string -- matches ``SpecifierSet("")``.
+        >>> "not-a-version" in VersionRange.full()
         True
         """
         if self._arbitrary is not None:
@@ -1991,6 +2002,10 @@ class VersionRange:
                 except InvalidVersion:
                     return False
             return self._matches_bounds(parsed)
+        if self._bounds == _FULL_RANGE:
+            # Full range carve-out: admit arbitrary strings so the
+            # parsed-or-not distinction matches ``SpecifierSet("")``.
+            return True
         # Inline the membership check (rather than delegating to a
         # helper) so the hot path on ``Specifier.contains`` /
         # ``SpecifierSet.contains`` avoids one Python function call.

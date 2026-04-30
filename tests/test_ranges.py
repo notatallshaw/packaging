@@ -564,12 +564,15 @@ class TestUnboundedFactory:
         assert not r.is_empty
         assert bool(r)
 
-    def test_contains_anything_parseable(self) -> None:
+    def test_contains_anything(self) -> None:
+        # Full-range carve-out: admits arbitrary strings to match the
+        # behaviour of ``SpecifierSet("")``.  Non-full ranges still
+        # reject unparseable inputs.
         r = VersionRange.full()
         assert "0" in r
         assert "999.999.999" in r
         assert "1.0a1" in r
-        assert "not-a-version" not in r
+        assert "not-a-version" in r
 
     def test_intersect_with_unbounded_is_self(self) -> None:
         a = VersionRange.from_specifier_set(SpecifierSet(">=1.0,<2.0"))

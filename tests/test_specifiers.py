@@ -1331,24 +1331,12 @@ class TestSpecifierSet:
         assert list(spec.filter(versions)) == expected
 
         # Range equivalence: the empty SpecifierSet's range is the
-        # full range, which only accepts PARSEABLE PEP 440 versions
-        # (no arbitrary strings).  ``rng.filter`` therefore drops
-        # ``foobar`` / ``bazqux``; we compare against the
-        # parse-only subset of ``expected``.
+        # full range, which carves out arbitrary-string admission to
+        # match the spec form's filter exactly.
         rng = spec.to_range()
         assert rng is not None
-        from packaging.version import InvalidVersion  # noqa: PLC0415
-
-        def _parses(s: str) -> bool:
-            try:
-                Version(s)
-            except InvalidVersion:
-                return False
-            return True
-
-        expected_parseable = [v for v in expected if _parses(v)]
-        range_result = list(rng.filter(versions, prereleases=prereleases))
-        assert range_result == expected_parseable
+        assert "foobar" in rng
+        assert list(rng.filter(versions, prereleases=prereleases)) == expected
 
     @pytest.mark.parametrize(
         ("versions", "expected"),
@@ -1377,21 +1365,11 @@ class TestSpecifierSet:
         result = list(spec.filter(versions))
         assert result == expected
 
-        # Range equivalence: the full range filters out unparseable
-        # strings; compare against the parseable subset.
+        # Range equivalence: the full range admits arbitrary strings
+        # and applies PEP 440 default-mode buffering identically.
         rng = spec.to_range()
         assert rng is not None
-        from packaging.version import InvalidVersion  # noqa: PLC0415
-
-        def _parses(s: str) -> bool:
-            try:
-                Version(s)
-            except InvalidVersion:
-                return False
-            return True
-
-        expected_parseable = [v for v in expected if _parses(v)]
-        assert list(rng.filter(versions)) == expected_parseable
+        assert list(rng.filter(versions)) == expected
 
     def test_create_from_specifiers(self) -> None:
         spec_strs = [">=1.0", "!=1.1", "!=1.2", "<2.0"]
@@ -1754,35 +1732,17 @@ class TestSpecifierSet:
 
         assert result == expected
 
-        # Range equivalence: every spec form -- including ``===`` --
-        # has a range thanks to the carve-out.  ``_resolve_prereleases``
-        # exposes the same chain ``filter`` uses internally, so tests
-        # don't duplicate it.  For pure rangelike SpecifierSets,
-        # unparseable strings are silently dropped (the range admits
-        # only parseable versions); for ``===`` carve-out ranges,
-        # unparseable strings that string-match the literal are kept.
+        # Range equivalence: every spec form has a range, and the
+        # range form's filter matches the spec form's filter exactly.
+        # Two carve-outs admit unparseable strings (full range +
+        # ``===`` carve-out); for non-full rangelike ranges the range
+        # admits only parseable versions, so unparseables in *expected*
+        # have been dropped at the spec layer too.
         rng = spec.to_range()
         assert rng is not None
-
-        from packaging.version import InvalidVersion  # noqa: PLC0415
-
-        def _parses(s: object) -> bool:
-            if isinstance(s, Version):
-                return True
-            try:
-                Version(s)  # type: ignore[arg-type]
-            except (InvalidVersion, TypeError):
-                return False
-            return True
-
         effective_pre = spec._resolve_prereleases(prereleases)
         range_result = list(rng.filter(input, prereleases=effective_pre))
-        if rng._arbitrary is None:
-            assert range_result == [v for v in expected if _parses(v)]
-        else:
-            # ``===`` lets unparseable strings through when they
-            # case-match the literal -- expected stays as-is.
-            assert range_result == expected
+        assert range_result == expected
 
     @pytest.mark.parametrize(
         ("prereleases", "expected_indexes"),

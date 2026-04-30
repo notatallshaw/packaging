@@ -32,6 +32,10 @@ Features:
   and ``intersection`` / ``union`` / ``complement`` raise ``TypeError``
   when either operand is a carve-out.  Previously the methods returned
   ``None``.
+* ``VersionRange.full()`` carve-out: the full range admits arbitrary
+  strings via ``__contains__`` and ``filter`` so ``SpecifierSet("")``
+  and its ``to_range()`` form behave identically.  Other (non-full,
+  non-``===``) ranges still reject unparseable inputs.
 
 Performance:
 

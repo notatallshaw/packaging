@@ -40,6 +40,12 @@ Usage
     'wat'
     >>> "wat" in arb and "WAT" in arb
     True
+    >>> # ``VersionRange.full()`` admits arbitrary strings, mirroring
+    >>> # ``SpecifierSet("")``; other ranges reject unparseable inputs.
+    >>> "not-a-version" in VersionRange.full()
+    True
+    >>> "not-a-version" in VersionRange.from_specifier(Specifier(">=1.0"))
+    False
 
 Set algebra
 -----------
