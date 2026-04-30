@@ -1225,7 +1225,7 @@ class VersionRange:
     Boolean-lattice operations the rest of the API guarantees.
     """
 
-    __slots__ = ("_arbitrary", "_bounds")
+    __slots__ = ("_arbitrary", "_bounds", "_singleton_v")
     # Slot type annotations for static type checkers; ``__slots__``
     # already declares storage.
     _bounds: tuple[_VersionRange, ...]
@@ -1234,6 +1234,15 @@ class VersionRange:
     #: continues to apply: a candidate must match the literal *and*
     #: (when it parses as a :class:`Version`) fall inside ``_bounds``.
     _arbitrary: str | None
+    #: When non-``None``, the :class:`Version` this range was created
+    #: for via :meth:`singleton`.  Pure fast-path cache: when set,
+    #: ``_bounds`` is guaranteed to be ``((LowerBound(v, True),
+    #: UpperBound(v, True)),)`` and ``_arbitrary`` is ``None``, so
+    #: hot operations can short-circuit to a single :class:`Version`
+    #: comparison.  Equality and hashing ignore this slot since two
+    #: ranges that compare equal must hash equal even if only one was
+    #: built via :meth:`singleton`.
+    _singleton_v: Version | None
 
     def __new__(cls, *args: object, **kwargs: object) -> VersionRange:  # noqa: PYI034
         raise TypeError(
@@ -1248,11 +1257,13 @@ class VersionRange:
         cls,
         bounds: tuple[_VersionRange, ...],
         arbitrary: str | None = None,
+        singleton_v: Version | None = None,
     ) -> VersionRange:
         """Internal factory bypassing :meth:`__new__`."""
         instance = object.__new__(cls)
         instance._bounds = bounds
         instance._arbitrary = arbitrary
+        instance._singleton_v = singleton_v
         return instance
 
     def _reject_arbitrary(self, other: VersionRange | None, op: str) -> None:
@@ -1334,7 +1345,11 @@ class VersionRange:
             version = Version(version)
         lower = _LowerBound(version, True)
         upper = _UpperBound(version, True)
-        return cls._build(((lower, upper),))
+        # ``singleton_v`` populates the fast-path cache; subsequent
+        # ``intersection`` / ``__contains__`` calls collapse to a
+        # direct ``Version`` compare instead of running the bound
+        # predicate machinery.
+        return cls._build(((lower, upper),), singleton_v=version)
 
     def intersection(self, other: VersionRange) -> VersionRange:
         """Range containing exactly the versions in both *self* and *other*.
@@ -1354,6 +1369,15 @@ class VersionRange:
         True
         """
         self._reject_arbitrary(other, "intersection")
+        # Singleton fast path: ``{v} ∩ R`` is ``{v}`` when ``v ∈ R``,
+        # else ``∅``.  Preserves the singleton-cache flag through
+        # chained intersections without rebuilding bound objects.
+        sv = self._singleton_v
+        if sv is not None:
+            return self if sv in other else self._build(())
+        ov = other._singleton_v
+        if ov is not None:
+            return other if ov in self else self._build(())
         return self._build(tuple(_intersect_ranges(self._bounds, other._bounds)))
 
     def union(self, other: VersionRange) -> VersionRange:
@@ -1956,6 +1980,16 @@ class VersionRange:
             # Full range carve-out: admit arbitrary strings so the
             # parsed-or-not distinction matches ``SpecifierSet("")``.
             return True
+        sv = self._singleton_v
+        if sv is not None:
+            # Singleton fast path: ``v ∈ {sv}`` iff ``v == sv``.  Skips
+            # the bound-predicate machinery entirely.
+            if isinstance(item, Version):
+                return item == sv
+            try:
+                return Version(item) == sv
+            except InvalidVersion:
+                return False
         # Inline the membership check (rather than delegating to a
         # helper) so the hot path on ``Specifier.contains`` /
         # ``SpecifierSet.contains`` avoids one Python function call.

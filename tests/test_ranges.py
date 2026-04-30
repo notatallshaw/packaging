@@ -640,6 +640,23 @@ class TestExactFactory:
         assert hash(a) == hash(b)
         assert len({a, b, VersionRange.singleton("2.0")}) == 2
 
+    def test_fast_path_intersect_range_with_singleton_rhs(self) -> None:
+        # ``range & singleton`` exercises the RHS-singleton short-circuit
+        # in ``VersionRange.intersection`` (LHS-singleton has its own
+        # branch, covered by ``test_intersect_*`` above).
+        rng = VersionRange.from_specifier_set(SpecifierSet(">=1.0,<2.0"))
+        sing_in = VersionRange.singleton("1.5")
+        sing_out = VersionRange.singleton("3.0")
+        assert rng & sing_in == sing_in
+        assert (rng & sing_out).is_empty
+
+    def test_fast_path_contains_unparseable_returns_false(self) -> None:
+        # ``__contains__`` on a singleton hits the singleton fast path
+        # and falls through to ``Version(item)``; an unparseable string
+        # raises :exc:`InvalidVersion` and the membership check is False.
+        sing = VersionRange.singleton("1.5")
+        assert "not-a-version" not in sing
+
 
 class TestUnion:
     def test_disjoint_exacts(self) -> None:
