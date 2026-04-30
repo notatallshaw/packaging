@@ -4,7 +4,19 @@ Changelog
 *unreleased*
 ~~~~~~~~~~~~
 
-No unreleased changes.
+Features:
+
+* Add ``packaging.ranges.VersionRange`` for inspecting the set of versions a
+  specifier accepts. Direct construction is not supported; instances are
+  produced by ``VersionRange.from_specifier`` and
+  ``VersionRange.from_specifier_set``.
+
+Performance:
+
+* Single-range fast path in the internal range filter and a direct
+  range-membership helper now back ``Specifier.contains`` and
+  ``SpecifierSet.contains``, removing per-call iterator and list
+  overhead in the common case.
 
 26.2 - 2026-04-24
 ~~~~~~~~~~~~~~~~~
