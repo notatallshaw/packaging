@@ -2236,6 +2236,25 @@ class TestToSpecifierSet:
         assert rt == SpecifierSet(">1.0.post0", prereleases=False)
         assert rt._prereleases is False
 
+    @pytest.mark.parametrize(("v", "base"), [("0.post0", "0"), ("1.2.post3", "1.2")])
+    def test_le_v_post_n_dev0_round_trips_under_cfg_false(
+        self, v: str, base: str
+    ) -> None:
+        # A literal ``<=V.postN.dev0`` encodes its ``<=`` fragment alone
+        # (only ``<V.postN`` produces the ``<=``/``!=`` pair), so the
+        # cfg=False cleanup leaves it verbatim. Stripping to ``<=V.postN``
+        # would wrongly admit ``V.postN``: cfg=False clamps pre-releases
+        # and ``V.postN`` is not one.
+        ss = SpecifierSet(f"<={v}.dev0", prereleases=False)
+        rt = ss.to_range().to_specifier_set()
+        assert rt == SpecifierSet(f"<={v}.dev0", prereleases=False)
+        assert rt._prereleases is False
+        for probe in (v, f"{v}.dev0", base):
+            for prereleases in (False, True):
+                assert ss.contains(probe, prereleases=prereleases) == rt.contains(
+                    probe, prereleases=prereleases
+                )
+
     def test_lt_zero_complement_cleans_to_ge_zero_under_cfg_false(self) -> None:
         # FULL_RANGE non-arbitrary under cfg=False emits ``>=0`` instead
         # of ``>=0.dev0``; the cleaner spelling preserves the
@@ -2515,6 +2534,14 @@ class TestToSpecifierSets:
         assert sets is not None
         for s in sets:
             assert s._prereleases is configured
+
+    def test_le_v_post_n_dev0_round_trips_under_cfg_false(self) -> None:
+        # Same lone ``<=V.postN.dev0`` fragment as the single-set entry
+        # point: the cfg=False cleanup passes it through verbatim.
+        r = SpecifierSet("<=1.2.post3.dev0", prereleases=False).to_range()
+        assert r.to_specifier_sets() == (
+            SpecifierSet("<=1.2.post3.dev0", prereleases=False),
+        )
 
     @pytest.mark.parametrize(
         ("left", "right", "expected"),

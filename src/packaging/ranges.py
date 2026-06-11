@@ -797,10 +797,13 @@ def _strip_dev0_upper_pair(fragments: list[str]) -> list[str] | None:
     if upper_version is None:
         return None
 
-    # ``_encode_upper`` always emits the ``<=V.postN.dev0`` /
-    # ``!=V.postN.dev0`` pair together.
+    # ``<V.postN`` encodes as the ``<=V.postN.dev0`` / ``!=V.postN.dev0``
+    # pair; a literal ``<=V.postN.dev0`` emits the ``<=`` fragment alone
+    # and must pass through verbatim (stripping to ``<=V.postN`` would
+    # admit ``V.postN``, which is not a pre-release).
     ne_target = f"!={upper_version}"
-    assert ne_target in fragments
+    if ne_target not in fragments:
+        return None
     ne_idx = fragments.index(ne_target)
 
     stripped = upper_version.__replace__(dev=None)
