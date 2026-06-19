@@ -237,14 +237,22 @@ def rich_specifier_sets(
     draw: st.DrawFn,
     *,
     include_arbitrary: bool = False,
+    vary_prereleases: bool = False,
 ) -> SpecifierSet:
-    """1-3 specifiers from :func:`pep440_specifier_strings`, joined."""
+    """1-3 specifiers from :func:`pep440_specifier_strings`, joined.
+
+    With ``vary_prereleases=True`` the configured pre-release policy is drawn
+    from ``(None, True, False)``; otherwise it is left as ``None`` (autodetect).
+    """
     num = draw(st.integers(min_value=1, max_value=3))
     parts = [
         draw(pep440_specifier_strings(include_arbitrary=include_arbitrary))
         for _ in range(num)
     ]
-    return SpecifierSet(",".join(parts))
+    prereleases = (
+        draw(st.sampled_from([None, True, False])) if vary_prereleases else None
+    )
+    return SpecifierSet(",".join(parts), prereleases=prereleases)
 
 
 @st.composite
