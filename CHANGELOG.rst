@@ -9,8 +9,11 @@ Features:
 * Add a public :class:`~packaging.ranges.VersionRange` API and
   :meth:`SpecifierSet.to_range() <packaging.specifiers.SpecifierSet.to_range>`,
   representing the versions a specifier set accepts as an interval set that
-  supports intersection, union, complement, membership tests, and filtering.
-  (:pull:`1267`)
+  supports intersection, union, complement, set relations
+  (:meth:`~packaging.ranges.VersionRange.is_subset`,
+  :meth:`~packaging.ranges.VersionRange.is_superset`,
+  :meth:`~packaging.ranges.VersionRange.is_disjoint`), membership tests, and
+  filtering. (:pull:`1267`)
 
 Behavior adaptations:
 

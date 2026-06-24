@@ -46,23 +46,29 @@ Comparing ranges
 Equality on a :class:`VersionRange` is structural: two ranges are equal only
 when they behave the same under :meth:`VersionRange.contains` and
 :meth:`VersionRange.filter`. Equality covers the pre-release policy and any
-``===`` admission, not only the versions matched. Intersection can change one
-of those without changing the version set, so the textbook subset test
-``a & b == a`` can report a false negative. Use the algebra and
-:attr:`VersionRange.is_empty` for set relations:
+``===`` admission, not only the versions matched.
+
+For set relations use :meth:`VersionRange.is_subset`,
+:meth:`VersionRange.is_superset`, and :meth:`VersionRange.is_disjoint` rather
+than comparing intersections by hand. Intersection can change the pre-release
+policy without changing the version set, so the textbook subset test
+``a & b == a`` can report a false negative. Each method is defined by the set
+algebra:
 
 .. doctest::
 
     >>> from packaging.specifiers import SpecifierSet
     >>> a = SpecifierSet(">=1.0").to_range()
     >>> b = SpecifierSet(">=1.0a1").to_range()
-    >>> # a is a subset of b (every version >=1.0 is also >=1.0a1), but b
+    >>> # Every version >=1.0 is also >=1.0a1, so a is a subset of b. But b
     >>> # admits pre-releases, so ``a & b`` and ``a`` differ only in policy:
     >>> a & b == a
     False
-    >>> (a & ~b).is_empty       # subset: a has no version outside b
+    >>> a.is_subset(b)
     True
-    >>> (a & b).is_empty        # disjoint: a and b share no version
+    >>> b.is_superset(a)
+    True
+    >>> a.is_disjoint(b)
     False
 
 Different specifiers for the same set of versions canonicalize to one form, so

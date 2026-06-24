@@ -425,6 +425,22 @@ class VersionRange:
         """
         return self._admit_arbitrary and self._bounds == FULL_RANGE
 
+    def _is_plain(self) -> bool:
+        """True when membership is decided by ``_bounds`` alone.
+
+        No ``===`` literals, no arbitrary-string admission, and a pre-release
+        policy that is not the excluding one (``_prereleases is not False``).
+        Under these conditions emptiness, disjointness, and subset reduce to
+        interval arithmetic, so the bounds-only fast paths in :meth:`is_disjoint`
+        and :meth:`is_subset` agree with the full set algebra. Otherwise those
+        methods fall back to the algebra itself.
+        """
+        return (
+            not self._has_literals()
+            and not self._admit_arbitrary
+            and self._prereleases is not False
+        )
+
     def _check_policy_compat(self, other: VersionRange) -> None:
         """Refuse combining ranges with different pre-release policies."""
         if not isinstance(other, VersionRange):
@@ -690,6 +706,67 @@ class VersionRange:
     def __invert__(self) -> VersionRange:
         """Operator alias for :meth:`complement`."""
         return self.complement()
+
+    def is_disjoint(self, other: VersionRange) -> bool:
+        """Return whether self and other share no member.
+
+        Equivalent to ``(self & other).is_empty``.
+
+        Both operands must share the same configured pre-release policy;
+        otherwise :exc:`ValueError` is raised.
+
+        >>> a = SpecifierSet(">=1.0,<2.0").to_range()
+        >>> a.is_disjoint(SpecifierSet(">=2.0,<3.0").to_range())
+        True
+        >>> a.is_disjoint(SpecifierSet(">=1.5,<2.5").to_range())
+        False
+        """
+        self._check_policy_compat(other)
+        if self._is_plain() and other._is_plain():
+            return not intersect_ranges(self._bounds, other._bounds)
+        return self.intersection(other).is_empty
+
+    def is_subset(self, other: VersionRange) -> bool:
+        """Return whether every member of self is also a member of other.
+
+        Equivalent to ``(self & ~other).is_empty``. For ``===`` ranges and the
+        arbitrary-admitting full range, complement is one-way, so the result
+        matches :meth:`contains` for versions but not for the non-version
+        strings those ranges admit.
+
+        Both operands must share the same configured pre-release policy;
+        otherwise :exc:`ValueError` is raised.
+
+        >>> inner = SpecifierSet(">=1.5,<1.8").to_range()
+        >>> outer = SpecifierSet(">=1.0,<2.0").to_range()
+        >>> inner.is_subset(outer)
+        True
+        >>> outer.is_subset(inner)
+        False
+        >>> VersionRange.empty().is_subset(outer)
+        True
+        """
+        self._check_policy_compat(other)
+        if self._is_plain() and other._is_plain():
+            return not intersect_ranges(self._bounds, _complement_ranges(other._bounds))
+        return self.intersection(other.complement()).is_empty
+
+    def is_superset(self, other: VersionRange) -> bool:
+        """Return whether every member of other is also a member of self.
+
+        The mirror of :meth:`is_subset`: ``a.is_superset(b)`` is
+        ``b.is_subset(a)``.
+
+        Both operands must share the same configured pre-release policy;
+        otherwise :exc:`ValueError` is raised.
+
+        >>> outer = SpecifierSet(">=1.0,<2.0").to_range()
+        >>> outer.is_superset(SpecifierSet(">=1.5,<1.8").to_range())
+        True
+        """
+        # Type-guards a non-VersionRange other before delegating to is_subset.
+        self._check_policy_compat(other)
+        return other.is_subset(self)
 
     @typing.overload
     def filter(
