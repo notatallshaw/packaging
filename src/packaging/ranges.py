@@ -5,8 +5,8 @@
 
 A set-algebra view of the versions accepted by a
 :class:`~packaging.specifiers.SpecifierSet`. Ranges support intersection,
-union, and complement; membership and filtering match the originating
-specifier set.
+union, complement, and difference; membership and filtering match the
+originating specifier set.
 
 .. testsetup::
 
@@ -632,6 +632,32 @@ class VersionRange:
             prereleases_configured=self._prereleases_configured,
         )
 
+    def _difference(self, other: VersionRange) -> VersionRange:
+        """Set difference; see :meth:`__sub__`.
+
+        Unlike :meth:`intersection`, the operands need not share a configured
+        pre-release policy: ``other``'s policy is discarded and only ``self``'s
+        is kept.
+        """
+        complement = other.complement()
+        new_bounds = tuple(intersect_ranges(self._bounds, complement._bounds))
+        combined_arb = self._admit_arbitrary and complement._admit_arbitrary
+        if not self._has_literals() and not complement._has_literals():
+            return self._build(
+                new_bounds,
+                admit_arbitrary=combined_arb,
+                prereleases=self._prereleases,
+                prereleases_configured=self._prereleases_configured,
+            )
+        return self._combine_literals(
+            complement,
+            new_bounds,
+            intersect=True,
+            admit_arbitrary=combined_arb,
+            prereleases=self._prereleases,
+            prereleases_configured=self._prereleases_configured,
+        )
+
     def _combine_literals(
         self,
         other: VersionRange,
@@ -690,6 +716,24 @@ class VersionRange:
     def __invert__(self) -> VersionRange:
         """Operator alias for :meth:`complement`."""
         return self.complement()
+
+    def __sub__(self, other: object) -> VersionRange:
+        """Set difference: versions in ``self`` but not in ``other``.
+
+        Matches ``self & ~other`` on the version set, but the result carries
+        only ``self``'s pre-release policy; ``other`` is treated as an
+        exclusion and contributes no pre-release admission.
+
+        >>> a = SpecifierSet(">=1.0").to_range()
+        >>> b = SpecifierSet(">=2.0").to_range()
+        >>> "1.5" in (a - b)
+        True
+        >>> "2.0" in (a - b)
+        False
+        """
+        if not isinstance(other, VersionRange):
+            return NotImplemented
+        return self._difference(other)
 
     @typing.overload
     def filter(

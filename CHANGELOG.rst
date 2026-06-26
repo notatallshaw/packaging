@@ -11,6 +11,10 @@ Features:
   representing the versions a specifier set accepts as an interval set that
   supports intersection, union, complement, membership tests, and filtering.
   (:pull:`1267`)
+* Add set difference to :class:`~packaging.ranges.VersionRange` via the ``-``
+  operator. ``a - b`` matches the versions in ``a`` but not ``b`` and keeps
+  only ``a``'s pre-release policy, so subtracting an exclusion grants no
+  pre-release admission. (:pull:`4`)
 
 Behavior adaptations:
 

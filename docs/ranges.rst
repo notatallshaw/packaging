@@ -5,9 +5,9 @@ Version Ranges
 
 A :class:`VersionRange` is the set of :class:`~packaging.version.Version`
 values accepted by a :class:`~packaging.specifiers.SpecifierSet`, viewed as
-intervals on the PEP 440 ordering. It supports intersection, union, and
-complement, so tooling that combines many requirements, such as a resolver,
-can work on the intervals directly.
+intervals on the PEP 440 ordering. It supports intersection, union,
+complement, and difference, so tooling that combines many requirements, such
+as a resolver, can work on the intervals directly.
 
 Usage
 -----
@@ -33,6 +33,11 @@ Usage
     >>> # The complement is every other version
     >>> Version("0.5") in ~r
     True
+    >>> # Difference removes one range from another
+    >>> Version("1.0") in (a - SpecifierSet(">=1.5").to_range())
+    True
+    >>> Version("1.5") in (a - SpecifierSet(">=1.5").to_range())
+    False
     >>> # Filter an iterable of versions
     >>> list(r.filter(["0.9", "1.5", "2.0"]))
     ['1.5']
@@ -48,7 +53,7 @@ when they behave the same under :meth:`VersionRange.contains` and
 :meth:`VersionRange.filter`. Equality covers the pre-release policy and any
 ``===`` admission, not only the versions matched. Intersection can change one
 of those without changing the version set, so the textbook subset test
-``a & b == a`` can report a false negative. Use the algebra and
+``a & b == a`` can report a false negative. Use difference, intersection, and
 :attr:`VersionRange.is_empty` for set relations:
 
 .. doctest::
@@ -60,7 +65,7 @@ of those without changing the version set, so the textbook subset test
     >>> # admits pre-releases, so ``a & b`` and ``a`` differ only in policy:
     >>> a & b == a
     False
-    >>> (a & ~b).is_empty       # subset: a has no version outside b
+    >>> (a - b).is_empty        # subset: a has no version outside b
     True
     >>> (a & b).is_empty        # disjoint: a and b share no version
     False

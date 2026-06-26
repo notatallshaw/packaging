@@ -251,10 +251,53 @@ class TestSetAlgebra:
     def test_operator_wrong_type(self) -> None:
         assert vr(">=1.0").__and__("x") is NotImplemented
         assert vr(">=1.0").__or__("x") is NotImplemented
+        assert vr(">=1.0").__sub__("x") is NotImplemented
 
     def test_intersection_wrong_type_raises(self) -> None:
         with pytest.raises(TypeError, match="expected VersionRange"):
             vr(">=1.0").intersection("x")  # type: ignore[arg-type]
+
+    def test_difference(self) -> None:
+        d = vr(">=1.0") - vr(">=2.0")
+        assert Version("1.5") in d
+        assert Version("1.0") in d
+        assert Version("2.0") not in d
+        assert d == vr(">=1.0") & ~vr(">=2.0")
+
+    def test_difference_with_empty_is_self(self) -> None:
+        r = vr(">=1.0,<2.0")
+        assert (r - VersionRange.empty()) == r
+
+    def test_difference_with_full_is_empty(self) -> None:
+        assert (vr(">=1.0") - VersionRange.full()).is_empty
+
+    def test_difference_keeps_minuend_prerelease_policy(self) -> None:
+        # ``>=1.0`` admits no pre-releases; subtracting a pre-release-naming
+        # range must not grant pre-release admission.
+        no_pre = vr(">=1.0") - vr(">=2.0b1")
+        assert list(no_pre.filter(["2.0b1", "1.5a1", "1.0"])) == ["1.0"]
+        # A pre-release-admitting minuend keeps admitting its pre-releases.
+        keep = vr(">=2.0b1") - vr(">=3.0")
+        assert list(keep.filter(["2.5", "2.0b1"])) == ["2.5", "2.0b1"]
+
+    def test_difference_allows_mismatched_policy(self) -> None:
+        # Unlike intersection, difference discards the subtrahend's policy, so
+        # the operands need not share a configured policy.
+        d = vr(">=1.0") - vr(">=2.0", prereleases=True)
+        assert list(d.filter(["2.0b1", "1.5a1", "1.0"])) == ["1.0"]
+
+    def test_difference_punches_hole(self) -> None:
+        # Subtracting an interior range leaves two intervals.
+        d = vr(">=1.0") - vr(">=2.0,<3.0")
+        assert Version("1.5") in d
+        assert Version("2.5") not in d
+        assert Version("3.5") in d
+
+    def test_difference_with_literals(self) -> None:
+        # ``===`` literal ranges route through the literal-combining branch.
+        assert Version("1.0") in (vr("===1.0") - vr("===2.0"))
+        assert Version("2.0") not in (vr("===1.0") - vr("===2.0"))
+        assert Version("1.0") in (vr("===1.0") - vr(">=2.0"))
 
 
 class TestFilter:
