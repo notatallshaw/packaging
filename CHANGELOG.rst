@@ -13,6 +13,10 @@ Features:
   (:pull:`1267`)
 * Add a ``limit`` argument to ``parse_tag()`` for compressed tag sets.
   (:issue:`1220`)
+* Add :meth:`VersionRange.between() <packaging.ranges.VersionRange.between>`,
+  a raw version-order interval constructor, and
+  :meth:`VersionRange.simplify() <packaging.ranges.VersionRange.simplify>`,
+  which re-anchors a range's finite bounds onto known versions for display.
 
 Behavior adaptations:
 
