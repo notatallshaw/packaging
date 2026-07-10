@@ -15,6 +15,15 @@ Features:
   (:pull:`1267`, :pull:`1270`)
 * Add a ``limit`` argument to ``parse_tag()`` for compressed tag sets.
   (:issue:`1220`)
+* Add :meth:`VersionRange.from_bounds() <packaging.ranges.VersionRange.from_bounds>`,
+  a raw version-order interval constructor for naming a range by its bounds
+  rather than by specifier semantics, and
+  :meth:`VersionRange.snap_bounds() <packaging.ranges.VersionRange.snap_bounds>`,
+  which snaps a range's finite bounds inward onto known versions for display.
+  Snapping is documented as a reduction operator: the result is a subset of the
+  original, agrees with it on the membership of every given version, and is
+  idempotent, so an incomplete list of known versions costs precision but never
+  renders an excluded version as allowed.
 
 Behavior adaptations:
 
