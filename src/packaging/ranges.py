@@ -12,7 +12,7 @@ exists.
 
 .. testsetup::
 
-    from packaging.ranges import VersionRange
+    from packaging.ranges import RangeRelation, VersionRange
     from packaging.specifiers import SpecifierSet
     from packaging.version import Version
 """
@@ -54,11 +54,60 @@ if TYPE_CHECKING:
     from .specifiers import SpecifierSet
 
 
-__all__ = ["VersionRange"]
+__all__ = ["RangeRelation", "VersionRange"]
 
 T = TypeVar("T")
 UnparsedVersion = Version | str
 UnparsedVersionVar = TypeVar("UnparsedVersionVar", bound=UnparsedVersion)
+
+
+class RangeRelation(enum.Enum):
+    """How one :class:`VersionRange` sits against another.
+
+    Returned by :meth:`VersionRange.relation`, which relates ``self`` to
+    ``other``. The four members partition the ``(is_subset, is_disjoint)``
+    space and carry that pair as read-only attributes, so either answer reads
+    off the result:
+
+    >>> RangeRelation.OVERLAPPING.is_subset
+    False
+    >>> RangeRelation.EMPTY.is_subset, RangeRelation.EMPTY.is_disjoint
+    (True, True)
+
+    .. versionadded:: 26.4
+    """
+
+    #: ``self`` has no members, so it is contained in ``other`` and shares
+    #: none with it.
+    EMPTY = enum.auto()
+
+    #: ``self`` has members and every one of them is in ``other``.
+    SUBSET = enum.auto()
+
+    #: ``self`` has members and none of them is in ``other``.
+    DISJOINT = enum.auto()
+
+    #: The two share a member, and ``self`` has one ``other`` lacks.
+    OVERLAPPING = enum.auto()
+
+    @property
+    def is_subset(self) -> bool:
+        """Whether every member of ``self`` is also a member of ``other``."""
+        return self is RangeRelation.EMPTY or self is RangeRelation.SUBSET
+
+    @property
+    def is_disjoint(self) -> bool:
+        """Whether ``self`` and ``other`` share no member."""
+        return self is RangeRelation.EMPTY or self is RangeRelation.DISJOINT
+
+    def __repr__(self) -> str:
+        """The member name; the ``auto()`` values are placeholders.
+
+        >>> RangeRelation.SUBSET
+        RangeRelation.SUBSET
+        """
+        return f"{type(self).__name__}.{self.name}"
+
 
 #: The most ``!=`` exclusion fragments (``!=V`` points or ``!=P.*`` prefixes)
 #: that :meth:`VersionRange.to_specifier_set` will materialize to spell a
@@ -181,6 +230,53 @@ def _complement_ranges(ranges: Sequence[Interval]) -> list[Interval]:
         result.append((gap_lower, POS_INF))
 
     return result
+
+
+def _relate_bounds(
+    left: Sequence[Interval],
+    right: Sequence[Interval],
+) -> RangeRelation:
+    """Return the :class:`RangeRelation` of two sorted interval lists.
+
+    One two-pointer merge answers containment and separation together, so
+    neither the intersection nor the complement is built.
+
+    Both lists are canonical, as :meth:`VersionRange._build` leaves them, and
+    the walk rests on two consequences of that. Endpoints have one spelling,
+    so comparing them decides containment. The gap between two intervals
+    always holds a version, so a covered left interval sits inside a single
+    right interval rather than spanning two, which makes per-interval
+    containment the whole test.
+    """
+    if not left:
+        return RangeRelation.EMPTY
+
+    covered = 0
+    left_index = right_index = 0
+    while left_index < len(left) and right_index < len(right):
+        left_lower, left_upper = left[left_index]
+        right_lower, right_upper = right[right_index]
+
+        if left_lower >= right_lower and left_upper <= right_upper:
+            covered += 1
+        elif not range_is_empty(
+            max(left_lower, right_lower), min(left_upper, right_upper)
+        ):
+            # A shared version, and left is not covered here, so not anywhere.
+            return RangeRelation.OVERLAPPING
+
+        # Advance whichever side has the smaller upper bound.
+        if left_upper < right_upper:
+            left_index += 1
+        else:
+            right_index += 1
+
+    if covered == len(left):
+        return RangeRelation.SUBSET
+
+    # An overlap that was not a covered interval returned above, so nothing
+    # covered means nothing shared.
+    return RangeRelation.OVERLAPPING if covered else RangeRelation.DISJOINT
 
 
 def _canonical_floor(bounds: tuple[Interval, ...]) -> tuple[Interval, ...]:
@@ -910,6 +1006,9 @@ class VersionRange:
     membership with ``in`` or :meth:`contains`, filter an iterable with
     :meth:`filter`, and convert back to a
     :class:`~packaging.specifiers.SpecifierSet` with :meth:`to_specifier_set`.
+    Relate two ranges with :meth:`is_subset`, :meth:`is_superset`, and
+    :meth:`is_disjoint`, or with :meth:`relation` for containment and
+    separation together.
 
     The configured pre-release policy of the originating specifier set carries
     onto the range and controls whether pre-releases are admitted under ``in``,
@@ -919,9 +1018,9 @@ class VersionRange:
     that opt-in scoped to those versions, so unrelated pre-releases are not
     admitted wholesale.
 
-    :meth:`intersection`, :meth:`union`, :meth:`difference`, and the
-    :meth:`is_subset` / :meth:`is_superset` / :meth:`is_disjoint` predicates
-    require both operands to share the same configured policy.
+    :meth:`intersection`, :meth:`union`, :meth:`difference`, :meth:`relation`,
+    and the :meth:`is_subset` / :meth:`is_superset` / :meth:`is_disjoint`
+    predicates require both operands to share the same configured policy.
 
     >>> r = SpecifierSet(">=1.0,<2.0").to_range()
     >>> "1.5" in r
@@ -1071,8 +1170,11 @@ class VersionRange:
         return self._admit_arbitrary and self._bounds == FULL_RANGE
 
     def _is_plain(self) -> bool:
-        """True when membership is decided by ``_bounds`` alone, enabling the
-        bounds-only fast paths in :meth:`is_subset` and :meth:`is_disjoint`.
+        """True when ``_bounds`` alone decides membership.
+
+        An admit literal or arbitrary admission adds members no bounds cover;
+        a reject literal or a pre-release-excluding policy withholds members
+        the bounds describe.
         """
         return (
             not self._has_literals()
@@ -1522,6 +1624,50 @@ class VersionRange:
         if self._is_plain() and other._is_plain():
             return not intersect_ranges(self._bounds, other._bounds)
         return self.intersection(other).is_empty
+
+    def relation(self, other: VersionRange) -> RangeRelation:
+        """Return how self's members sit against other's.
+
+        One result carries both answers: ``a.relation(b).is_subset`` is
+        ``a.is_subset(b)`` and ``a.relation(b).is_disjoint`` is
+        ``a.is_disjoint(b)``. An empty range is a subset of every range and
+        shares a member with none, so it answers
+        :attr:`~RangeRelation.EMPTY` rather than :attr:`~RangeRelation.SUBSET`.
+
+        :meth:`is_subset` and :meth:`is_disjoint` settle the corner cases, so
+        their rules hold here too: a live arbitrary admission (the flag at
+        full bounds) is contained only in another live one, and both operands
+        must share the same configured pre-release policy, or
+        :exc:`ValueError` is raised.
+
+        >>> inner = SpecifierSet(">=1.5,<1.8").to_range()
+        >>> outer = SpecifierSet(">=1.0,<2.0").to_range()
+        >>> inner.relation(outer)
+        RangeRelation.SUBSET
+        >>> outer.relation(inner)
+        RangeRelation.OVERLAPPING
+        >>> outer.relation(SpecifierSet(">=5.0").to_range())
+        RangeRelation.DISJOINT
+        >>> VersionRange.empty().relation(outer)
+        RangeRelation.EMPTY
+        >>> outer.relation(inner).is_disjoint
+        False
+
+        .. versionadded:: 26.4
+        """
+        self._check_policy_compat(other)
+
+        # Plain ranges: one walk over the bounds settles both answers.
+        if self._is_plain() and other._is_plain():
+            return _relate_bounds(self._bounds, other._bounds)
+
+        # Otherwise the bounds do not settle membership, which is what the two
+        # predicates are for.
+        subset = self.is_subset(other)
+        disjoint = self.is_disjoint(other)
+        if subset:
+            return RangeRelation.EMPTY if disjoint else RangeRelation.SUBSET
+        return RangeRelation.DISJOINT if disjoint else RangeRelation.OVERLAPPING
 
     def _same_releases(self, other: VersionRange) -> bool:
         """Whether self and other admit the same non-pre-release versions.
