@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, cast
 
 import pytest
 
-from packaging.markers import Marker, default_environment
+from packaging.markers import Marker, UndefinedEnvironmentName, default_environment
 from packaging.pylock import (
     Package,
     PackageArchive,
@@ -194,6 +194,52 @@ def test_package_select_by_marker() -> None:
     )
     assert len(selected) == 1
     assert selected[0][0].name == "foo"
+
+
+def test_package_marker_is_evaluated_in_the_lock_file_context() -> None:
+    # extra is not defined in the lock file context, so a package marker naming
+    # it is an error rather than a package that can never be selected.
+    pylock = Pylock(
+        lock_version=Version("1.0"),
+        created_by="some_tool",
+        packages=[
+            Package(
+                name=cast("NormalizedName", "tomli"),
+                marker=Marker('extra == "docs"'),
+                version=Version("1.0"),
+                archive=PackageArchive(
+                    path="tomli-1.0.tar.gz", hashes={"sha256": "abc123"}
+                ),
+            ),
+        ],
+    )
+    pylock.validate()
+    with pytest.raises(UndefinedEnvironmentName, match=r"^'extra'$"):
+        list(
+            pylock.select(
+                tags=_py312_linux.tags,
+                environment=_py312_linux.environment,
+            )
+        )
+
+
+def test_environments_are_evaluated_in_the_requirement_context() -> None:
+    # extras is defined in the lock file context and not in the requirement
+    # one, so an environments entry naming it is an error.
+    pylock = Pylock(
+        lock_version=Version("1.0"),
+        created_by="some_tool",
+        environments=[Marker('"docs" in extras')],
+        packages=[],
+    )
+    pylock.validate()
+    with pytest.raises(UndefinedEnvironmentName, match=r"^'extras'$"):
+        list(
+            pylock.select(
+                tags=_py312_linux.tags,
+                environment=_py312_linux.environment,
+            )
+        )
 
 
 def test_duplicate_packages() -> None:

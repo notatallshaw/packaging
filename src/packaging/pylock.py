@@ -20,6 +20,7 @@ from .markers import (
     Marker,
     _pep440_python_full_version,
     default_environment,
+    prepare_environment,
 )
 from .specifiers import SpecifierSet
 from .tags import create_compatible_tags_selector, sys_tags
@@ -658,10 +659,10 @@ class Pylock:
         #    #. ``extras`` SHOULD be set to the empty set by default.
         #    #. ``dependency_groups`` SHOULD be the set created from
         #       :ref:`pylock-default-groups` by default.
-        env = cast(
+        overrides = cast(
             "dict[str, str | frozenset[str]]",
             dict(
-                environment or {},  # Marker.evaluate will fill-up
+                environment or {},
                 extras=frozenset(extras or []),
                 dependency_groups=frozenset(
                     (self.default_groups or [])
@@ -670,6 +671,7 @@ class Pylock:
                 ),
             ),
         )
+        lock_file_env = prepare_environment(overrides, context="lock_file")
         env_python_full_version = _pep440_python_full_version(
             environment["python_full_version"]
             if environment
@@ -696,10 +698,11 @@ class Pylock:
         #    environment marker expressions is satisfied; an error MUST be raised if no
         #    expression is satisfied.
         if self.environments is not None:
+            requirement_env = prepare_environment(
+                cast("dict[str, str]", environment or {}), context="requirement"
+            )
             for env_marker in self.environments:
-                if env_marker.evaluate(
-                    cast("dict[str, str]", environment or {}), context="requirement"
-                ):
+                if env_marker.evaluate_prepared(requirement_env):
                     break
             else:
                 raise PylockSelectError(
@@ -712,7 +715,7 @@ class Pylock:
         for package_index, package in enumerate(self.packages):
             # #. If :ref:`pylock-packages-marker` is specified, check if it is
             #    satisfied;if it isn't, skip to the next package.
-            if package.marker and not package.marker.evaluate(env, context="lock_file"):
+            if package.marker and not package.marker.evaluate_prepared(lock_file_env):
                 continue
 
             # #. If :ref:`pylock-packages-requires-python` is specified, check if it is
