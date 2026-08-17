@@ -51,6 +51,46 @@ Usage
     >>> str(r.to_specifier_set())
     '<2.0,>=1.0'
 
+Building from raw bounds
+------------------------
+
+:meth:`VersionRange.from_bounds` builds the interval between two order cuts
+directly, without going through a specifier set. It is the constructor to reach
+for when the boundaries are already known, and it places cuts PEP 440 syntax
+cannot spell, such as an upper bound admitting ``2.0`` but not ``2.0+local``.
+
+.. doctest::
+
+    >>> window = VersionRange.from_bounds("1.0", "2.0")
+    >>> Version("2.0") in window
+    True
+    >>> Version("2.0+local") in window
+    False
+    >>> Version("2.0") in VersionRange.from_bounds("1.0", "2.0", include_upper=False)
+    False
+
+Membership is decided by the cuts alone, so it differs from the specifier set
+that reads the same way. ``<2.0`` excludes the pre-releases of its own bound,
+so it excludes ``2.0rc1``, and ``>1.0`` excludes the post-releases of its own
+bound, so it excludes ``1.0.post1``; raw bounds do neither:
+
+.. doctest::
+
+    >>> Version("2.0rc1") in VersionRange.from_bounds("1.0", "2.0")
+    True
+    >>> Version("2.0rc1") in SpecifierSet(">=1.0,<2.0").to_range()
+    False
+
+A range built from raw cuts usually has no PEP 440 spelling, and
+:meth:`VersionRange.to_specifier_set` returns ``None`` when it has none:
+
+.. doctest::
+
+    >>> VersionRange.from_bounds("1.0", "2.0").to_specifier_set() is None
+    True
+
+.. versionadded:: 26.4
+
 Pre-releases
 ------------
 
@@ -178,6 +218,53 @@ while the second does not; they are not substitutable and compare unequal:
 
     >>> SpecifierSet("<1.0.post0.dev0").to_range() == SpecifierSet("<=1.0").to_range()
     False
+
+Snapping onto released versions
+-------------------------------
+
+Set algebra leaves bounds at versions nobody released. Removing
+``>=1.1,<1.2`` from ``>=1.0,<2.0`` cuts the range at ``1.1`` and ``1.2.dev0``,
+though the versions actually published are ``1.0``, ``1.5``, ``1.9`` and
+``2.5``:
+
+.. doctest::
+
+    >>> published = ["1.0", "1.5", "1.9", "2.5"]
+    >>> source = SpecifierSet(">=1.0,<2.0").to_range()
+    >>> gapped = source - SpecifierSet(">=1.1,<1.2").to_range()
+    >>> gapped
+    <VersionRange '[1.0, 1.1) | [1.2.dev0, 2.0.dev0)'>
+
+:meth:`VersionRange.snap_bounds` moves each finite bound inward onto the
+outermost given version its segment contains, which restates the range in terms
+of versions that exist:
+
+.. doctest::
+
+    >>> gapped.snap_bounds(published)
+    <VersionRange '[1.0, 1.0] | [1.5, 1.9]'>
+
+The result is always a subset of the original, so a stale or incomplete list
+costs precision and never soundness: snapping can drop versions, and cannot
+admit one the original excluded. It also agrees with the original on every
+version given to it, and snapping again on the same list changes nothing.
+
+.. doctest::
+
+    >>> snapped = gapped.snap_bounds(published)
+    >>> snapped.is_subset(gapped)
+    True
+    >>> [v for v in published if snapped.contains(v)] == [
+    ...     v for v in published if gapped.contains(v)
+    ... ]
+    True
+    >>> snapped.snap_bounds(published) == snapped
+    True
+
+An unbounded end stays unbounded, and a segment holding none of the given
+versions is left alone.
+
+.. versionadded:: 26.4
 
 Recovering a specifier set
 --------------------------
