@@ -180,12 +180,18 @@ class LowerBound:
 
     A version *v* of ``None`` means unbounded below (-inf).
     At equal versions, ``[v`` sorts before ``(v`` because an inclusive
-    bound starts earlier.
+    bound starts earlier. ``-inf`` carries no inclusivity, so ``inclusive``
+    is forced to ``False`` and the unbounded end has one spelling.
     """
 
     __slots__ = ("_above", "inclusive", "version")
 
     def __init__(self, version: _VersionOrBoundary, inclusive: bool) -> None:
+        # Two spellings of -inf would be unequal with neither sorting below the
+        # other, which total_ordering reads as each being greater than the other.
+        if version is None:
+            inclusive = False
+
         self.version = version
         self.inclusive = inclusive
         # Pre-bind a predicate "is parsed at or above this lower
@@ -237,12 +243,17 @@ class UpperBound:
 
     A version *v* of ``None`` means unbounded above (+inf).
     At equal versions, ``v)`` sorts before ``v]`` because an exclusive
-    bound ends earlier.
+    bound ends earlier. ``+inf`` carries no inclusivity, so ``inclusive``
+    is forced to ``False`` and the unbounded end has one spelling.
     """
 
     __slots__ = ("_below", "inclusive", "version")
 
     def __init__(self, version: _VersionOrBoundary, inclusive: bool) -> None:
+        # See LowerBound: two spellings of +inf would each sort above the other.
+        if version is None:
+            inclusive = False
+
         self.version = version
         self.inclusive = inclusive
         # Pre-bind a predicate "is parsed at or below this upper
