@@ -84,6 +84,60 @@ does not admit a pre-release up in that range:
 Neither operand admits ``3.6b1``: ``>=3.5,<4`` names no pre-release and
 ``>=2.0b1,<3`` opts in only below ``3``.
 
+Filtering a listing already in version order
+--------------------------------------------
+
+:meth:`VersionRange.filter` tests every entry it is handed, because an iterable
+carries no order. A caller who already holds a version-ordered sequence, such
+as a project's release listing, can say so with ``assume_sorted``. Each of the
+range's intervals then covers one contiguous slice of the sequence, which two
+bisections locate:
+
+.. doctest::
+
+    >>> r = SpecifierSet(">=1.0,<2.0").to_range()
+    >>> listing = ["0.9", "1.0", "1.5", "1.9", "2.0", "2.5"]
+    >>> list(r.filter(listing, assume_sorted="ascending"))
+    ['1.0', '1.5', '1.9']
+
+Say ``"descending"`` for a newest-first listing. The keyword changes only how
+the matching entries are found, never which ones or in what order:
+
+.. doctest::
+
+    >>> list(r.filter(listing[::-1], assume_sorted="descending"))
+    ['1.9', '1.5', '1.0']
+
+``assume_sorted`` is a promise about the argument, the way
+:func:`bisect.bisect_left` takes one, and nothing verifies it. Only the two end
+entries are compared, which catches a listing handed over the other way round:
+
+.. doctest::
+
+    >>> r.filter(listing, assume_sorted="descending")
+    Traceback (most recent call last):
+        ...
+    ValueError: assume_sorted='descending' but the given sequence runs from 0.9 to 2.5
+
+Break the promise anywhere else and the result is unspecified, in both
+directions: entries the range contains can go missing, and entries it excludes
+can come back. Here ``9.0`` is outside ``<2.5`` and is returned anyway, because
+one entry out of place moves where the bisection cuts:
+
+.. doctest::
+
+    >>> below = SpecifierSet("<2.5").to_range()
+    >>> list(below.filter(["1.0", "9.0", "2.0", "3.0"], assume_sorted="ascending"))
+    ['1.0', '9.0', '2.0']
+
+An entry that does not parse as a version breaks the promise the same way, since
+it has no place in version order: such a call may raise :exc:`ValueError`, drop
+the entry, or return it.
+
+A range that decides membership outside its bounds ignores the keyword and tests
+every entry: one built from a ``===`` specifier, and one that admits arbitrary
+strings.
+
 Set difference
 --------------
 

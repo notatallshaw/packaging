@@ -4,12 +4,17 @@
 
 from __future__ import annotations
 
+import operator
+from typing import Literal
+
 import pytest
 
 from packaging._ranges import BoundaryKind, BoundaryVersion
 from packaging.ranges import _MAX_EXCLUSION_RUN, VersionRange
 from packaging.specifiers import Specifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
+
+SortedOrder = Literal["ascending", "descending"]
 
 
 def vr(spec: str, prereleases: bool | None = None) -> VersionRange:
@@ -971,6 +976,206 @@ class TestFilter:
     def test_filter_admission_reject(self) -> None:
         r = ~vr("===1.0")
         assert list(r.filter(["1.0", "2.0"])) == ["2.0"]
+
+
+# Sorted oldest first, spanning finals, pre-releases, post and dev releases.
+SORTED_POOL = [
+    "0.9",
+    "1.0.dev1",
+    "1.0a1",
+    "1.0b2",
+    "1.0rc1",
+    "1.0",
+    "1.0.post1",
+    "1.5a1",
+    "1.5",
+    "1.9.9",
+    "2.0a1",
+    "2.0",
+    "2.5",
+    "3.0",
+]
+
+
+class TestFilterAssumeSorted:
+    """``assume_sorted`` bisects, and must agree with the per-entry walk."""
+
+    @pytest.mark.parametrize(
+        "spec",
+        [
+            "",
+            ">=1.0",
+            "<2.0",
+            ">=1.0,<2.0",
+            ">1.0",
+            "<=2.0",
+            "~=1.0",
+            "==1.0",
+            "!=1.0",
+            "!=1.0,!=1.5,!=2.0,>=0.9",
+            "==1.*",
+            ">=1.0a1,<3.0",
+            ">=2.0,<1.0",
+        ],
+    )
+    @pytest.mark.parametrize("prereleases", [None, True, False])
+    @pytest.mark.parametrize("order", ["ascending", "descending"])
+    def test_agrees_with_the_per_entry_walk(
+        self, spec: str, prereleases: bool | None, order: SortedOrder
+    ) -> None:
+        r = vr(spec, prereleases=prereleases)
+        items = SORTED_POOL if order == "ascending" else SORTED_POOL[::-1]
+        assert list(r.filter(items, assume_sorted=order)) == list(r.filter(items))
+
+    @pytest.mark.parametrize("order", ["ascending", "descending"])
+    def test_agrees_over_version_objects(self, order: SortedOrder) -> None:
+        r = vr(">=1.0,<3.0")
+        items = [Version(v) for v in SORTED_POOL]
+        if order == "descending":
+            items.reverse()
+        assert list(r.filter(items, assume_sorted=order)) == list(r.filter(items))
+
+    @pytest.mark.parametrize("order", ["ascending", "descending"])
+    def test_agrees_through_a_key(self, order: SortedOrder) -> None:
+        r = vr(">=1.0,<3.0")
+        items = [{"v": v} for v in SORTED_POOL]
+        if order == "descending":
+            items.reverse()
+        by_v = operator.itemgetter("v")
+        assert list(r.filter(items, key=by_v, assume_sorted=order)) == list(
+            r.filter(items, key=by_v)
+        )
+
+    def test_unbounded_below(self) -> None:
+        assert list(vr("<1.5").filter(["0.9", "1.0"], assume_sorted="ascending")) == [
+            "0.9",
+            "1.0",
+        ]
+
+    def test_unbounded_above(self) -> None:
+        assert list(vr(">=1.0").filter(["1.0", "2.0"], assume_sorted="ascending")) == [
+            "1.0",
+            "2.0",
+        ]
+
+    def test_full_range_is_unbounded_both_ways(self) -> None:
+        full = VersionRange.full(admit_arbitrary=False)
+        assert list(full.filter(["1.0", "2.0"], assume_sorted="ascending")) == [
+            "1.0",
+            "2.0",
+        ]
+
+    def test_buffered_prereleases_flush_when_no_final_matches(self) -> None:
+        assert list(vr(">=1.0").filter(["1.5a1"], assume_sorted="ascending")) == [
+            "1.5a1"
+        ]
+
+    def test_excluded_prereleases_are_not_buffered(self) -> None:
+        # Nothing else matches, so a buffered pre-release would be flushed.
+        r = vr(">=1.0", prereleases=False)
+        assert list(r.filter(["1.5a1", "1.6a1"], assume_sorted="ascending")) == []
+
+    def test_a_key_decides_the_prerelease_flag(self) -> None:
+        # Not the entry's own flag: here every key is a final release.
+        r = vr(">=1.0")
+        items = [Version("1.0a1"), Version("2.0")]
+        by_base = operator.attrgetter("base_version")
+        assert list(r.filter(items, key=by_base, assume_sorted="ascending")) == items
+
+    def test_region_admits_a_prerelease_in_place(self) -> None:
+        # The opt-in region is part of the bounds rather than all of them, so
+        # the region test runs per matched entry.
+        u = vr("~=1.0a1") | vr(">=2.5")
+        assert list(u.filter(["1.5a1", "2.6"], assume_sorted="ascending")) == [
+            "1.5a1",
+            "2.6",
+        ]
+
+    def test_whole_region_admits_every_prerelease(self) -> None:
+        r = vr(">=1.0a1")
+        assert list(r.filter(["1.0a1", "1.5"], assume_sorted="ascending")) == [
+            "1.0a1",
+            "1.5",
+        ]
+
+    def test_empty_sequence(self) -> None:
+        assert list(vr(">=1.0").filter([], assume_sorted="ascending")) == []
+
+    @pytest.mark.parametrize("order", ["ascending", "descending"])
+    def test_single_entry_is_ordered_either_way(self, order: SortedOrder) -> None:
+        assert list(vr(">=1.0").filter(["1.5"], assume_sorted=order)) == ["1.5"]
+
+    @pytest.mark.parametrize("order", ["ascending", "descending"])
+    def test_equal_endpoints_are_ordered_either_way(self, order: SortedOrder) -> None:
+        assert list(vr(">=1.0").filter(["1.5", "1.5"], assume_sorted=order)) == [
+            "1.5",
+            "1.5",
+        ]
+
+    @pytest.mark.parametrize(
+        ("order", "items"),
+        [
+            ("ascending", ["2.0", "1.0"]),
+            ("descending", ["1.0", "2.0"]),
+        ],
+    )
+    def test_contradicting_endpoints_raise(
+        self, order: SortedOrder, items: list[str]
+    ) -> None:
+        with pytest.raises(ValueError, match=f"assume_sorted={order!r}"):
+            vr(">=1.0").filter(items, assume_sorted=order)
+
+    def test_unknown_order_raises(self) -> None:
+        with pytest.raises(ValueError, match="'ascending' or 'descending'"):
+            vr(">=1.0").filter(["1.0"], assume_sorted="up")  # type: ignore[call-overload]
+
+    @pytest.mark.parametrize("order", ["ascending", "descending"])
+    def test_a_non_sequence_raises(self, order: SortedOrder) -> None:
+        with pytest.raises(TypeError, match="assume_sorted needs a sequence"):
+            vr(">=1.0").filter(iter(["1.0", "2.0"]), assume_sorted=order)  # type: ignore[call-overload]
+
+    def test_an_unparsable_entry_is_unspecified(self) -> None:
+        """One unparsable entry: a raise under one range, a drop under another."""
+        listing = ["1.0", "wat", "2.0", "3.0"]
+        with pytest.raises(ValueError, match="cannot be in version order"):
+            list(vr(">=1.0,<3.0").filter(listing, assume_sorted="ascending"))
+        assert list(vr(">=2.5").filter(listing, assume_sorted="ascending")) == ["3.0"]
+
+    def test_an_unparsable_entry_can_come_back(self) -> None:
+        """The other half of unspecified: an entry the per-entry walk drops."""
+        listing = ["1.0", "2.0", "3.0", "wat", "5.0"]
+        r = vr(">=0.1a1")
+        assert list(r.filter(listing)) == ["1.0", "2.0", "3.0", "5.0"]
+        assert list(r.filter(listing, assume_sorted="ascending")) == listing
+
+    def test_an_out_of_order_sequence_can_yield_an_excluded_entry(self) -> None:
+        """One entry out of place moves the cut, so ``9.0`` survives ``<2.5``."""
+        r = vr("<2.5")
+        kept = list(r.filter(["1.0", "9.0", "2.0", "3.0"], assume_sorted="ascending"))
+        assert "9.0" in kept
+        assert "9.0" not in r
+
+    def test_a_range_with_no_bounds_ignores_the_keyword(self) -> None:
+        empty = vr(">=2.0,<1.0")
+        assert empty._bounds == ()
+        assert list(empty.filter(["2.0", "1.0"], assume_sorted="ascending")) == []
+
+    def test_arbitrary_admission_ignores_the_keyword(self) -> None:
+        # ``full()`` holds non-version strings as members, so it cannot bisect.
+        full = VersionRange.full()
+        assert list(full.filter(["1.0", "wat"], assume_sorted="ascending")) == [
+            "1.0",
+            "wat",
+        ]
+
+    def test_literal_range_ignores_the_keyword(self) -> None:
+        # ``===`` decides membership for strings the bounds cannot describe.
+        admitting = VersionRange.full() & vr("===wat")
+        assert list(admitting.filter(["wat"], assume_sorted="ascending")) == ["wat"]
+        rejecting = ~vr("===1.0")
+        assert list(rejecting.filter(["1.0", "2.0"], assume_sorted="ascending")) == [
+            "2.0"
+        ]
 
 
 class TestContains:
