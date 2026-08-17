@@ -21,6 +21,19 @@ class TestConstruction:
         with pytest.raises(TypeError, match="cannot create"):
             VersionRange()
 
+    def test_construction_error_names_every_factory(self) -> None:
+        with pytest.raises(TypeError) as excinfo:
+            VersionRange()
+        message = str(excinfo.value)
+        for factory in (
+            "SpecifierSet.to_range()",
+            "VersionRange.full()",
+            "VersionRange.empty()",
+            "VersionRange.singleton()",
+            "VersionRange.from_bounds()",
+        ):
+            assert factory in message
+
     def test_full(self) -> None:
         r = VersionRange.full()
         assert Version("1.0") in r
@@ -2154,3 +2167,419 @@ class TestCoverageEdges:
         recovered = r.to_specifier_set()
         assert recovered is not None
         assert recovered.to_range() == r
+
+
+class TestFromBounds:
+    def test_closed_default(self) -> None:
+        r = VersionRange.from_bounds("1.0", "2.0")
+        assert Version("1.0") in r
+        assert Version("2.0") in r
+        assert Version("0.9") not in r
+        assert Version("2.1") not in r
+
+    def test_half_open_upper(self) -> None:
+        r = VersionRange.from_bounds("1.0", "2.0", include_upper=False)
+        assert Version("1.0") in r
+        assert Version("2.0") not in r
+
+    def test_half_open_lower(self) -> None:
+        r = VersionRange.from_bounds("1.0", "2.0", include_lower=False)
+        assert Version("1.0") not in r
+        assert Version("2.0") in r
+
+    def test_open_both(self) -> None:
+        r = VersionRange.from_bounds(
+            "1.0", "2.0", include_lower=False, include_upper=False
+        )
+        assert Version("1.0") not in r
+        assert Version("1.5") in r
+        assert Version("2.0") not in r
+
+    def test_unbounded_lower(self) -> None:
+        r = VersionRange.from_bounds(upper="2.0")
+        assert Version("0.1") in r
+        assert Version("2.0") in r
+        assert Version("2.1") not in r
+
+    def test_unbounded_upper(self) -> None:
+        r = VersionRange.from_bounds("1.0")
+        assert Version("1.0") in r
+        assert Version("99") in r
+        assert Version("0.9") not in r
+
+    def test_unbounded_both_equals_full_no_arbitrary(self) -> None:
+        assert VersionRange.from_bounds() == VersionRange.full(admit_arbitrary=False)
+        assert "wat" not in VersionRange.from_bounds()
+
+    def test_inverted_is_empty(self) -> None:
+        assert VersionRange.from_bounds("2.0", "1.0").is_empty
+
+    def test_equal_bounds_closed_is_singleton(self) -> None:
+        assert VersionRange.from_bounds("1.5", "1.5") == VersionRange.singleton("1.5")
+
+    def test_equal_bounds_exclusive_upper_is_empty(self) -> None:
+        assert VersionRange.from_bounds("1.5", "1.5", include_upper=False).is_empty
+
+    def test_equal_bounds_exclusive_lower_is_empty(self) -> None:
+        assert VersionRange.from_bounds("1.5", "1.5", include_lower=False).is_empty
+
+    def test_accepts_version_objects(self) -> None:
+        r = VersionRange.from_bounds(Version("1.0"), Version("2.0"))
+        assert Version("1.5") in r
+
+    def test_invalid_lower(self) -> None:
+        with pytest.raises(InvalidVersion):
+            VersionRange.from_bounds("not a version")
+
+    def test_invalid_upper(self) -> None:
+        with pytest.raises(InvalidVersion):
+            VersionRange.from_bounds(upper="not a version")
+
+    def test_prereleases_false_excludes(self) -> None:
+        r = VersionRange.from_bounds("1.0", "2.0", prereleases=False)
+        assert r._prereleases_configured is False
+        assert not r.contains("1.5a1")
+
+    def test_prereleases_true_admits(self) -> None:
+        r = VersionRange.from_bounds("1.0", "2.0", prereleases=True)
+        assert r._prereleases_configured is True
+        assert r.contains("1.5a1")
+
+    def test_bounds_only_admits_post_of_lower(self) -> None:
+        r = VersionRange.from_bounds("1.0", "2.0", include_lower=False)
+        assert Version("1.0.post1") in r
+        assert Version("1.0.post1") not in vr(">1.0,<2.0")
+
+    def test_bounds_only_admits_local(self) -> None:
+        r = VersionRange.from_bounds("1.0", "2.0", include_lower=False)
+        assert Version("1.0+local") in r
+
+    def test_bounds_only_admits_rc_below_upper(self) -> None:
+        r = VersionRange.from_bounds("1.0", "2.0")
+        assert Version("2.0rc1") in r
+        assert Version("2.0rc1") not in vr(">=1.0,<2.0")
+
+    def test_floor_empty_canonical(self) -> None:
+        # (-inf, 0.dev0) holds no version; _canonical_floor drops the interval,
+        # which plain bound comparison cannot see with an unbounded lower.
+        assert VersionRange.from_bounds(None, "0.dev0", include_upper=False).is_empty
+
+    def test_floor_empty_epoch_variant(self) -> None:
+        # 0!0.dev0 is the same version as 0.dev0, so it is floor-empty too.
+        assert VersionRange.from_bounds(None, "0!0.dev0", include_upper=False).is_empty
+
+    def test_higher_epoch_floor_not_collapsed(self) -> None:
+        r = VersionRange.from_bounds(None, "1!0.dev0", include_upper=False)
+        assert not r.is_empty
+        assert Version("5.0") in r
+
+    def test_inclusive_lower_at_floor_folds_to_full(self) -> None:
+        assert VersionRange.from_bounds("0.dev0") == VersionRange.full(
+            admit_arbitrary=False
+        )
+
+
+class TestSnapBounds:
+    def test_finite_bounds_move_inward(self) -> None:
+        r = vr(">=1.0,<2.0")
+        assert r.snap_bounds(["1.2", "1.5", "1.8"]) == VersionRange.from_bounds(
+            "1.2", "1.8"
+        )
+
+    def test_keeps_unbounded_end(self) -> None:
+        r = vr(">=1.0")
+        assert r.snap_bounds(["1.2", "1.5"]) == VersionRange.from_bounds("1.2")
+
+    def test_segment_holding_none_of_them_is_kept(self) -> None:
+        r = vr(">=1.0,<2.0")
+        assert r.snap_bounds(["5.0", "6.0"]) == r
+
+    def test_no_versions_leaves_the_range_alone(self) -> None:
+        r = vr(">=1.0,<2.0")
+        assert r.snap_bounds([]) == r
+
+    def test_empty_range_snaps_to_itself(self) -> None:
+        r = VersionRange.empty()
+        assert r.snap_bounds(["1.0"]) == r
+
+    def test_empty_range_still_parses_the_versions(self) -> None:
+        with pytest.raises(InvalidVersion):
+            VersionRange.empty().snap_bounds(["not a version"])
+
+    def test_unsorted_and_duplicate_versions(self) -> None:
+        r = vr(">=1.0,<2.0")
+        result = r.snap_bounds(["1.8", "1.2", "1.5", "1.2"])
+        assert result == VersionRange.from_bounds("1.2", "1.8")
+
+    def test_mixed_strings_and_version_objects(self) -> None:
+        r = vr(">=1.0,<2.0")
+        result = r.snap_bounds(["1.2", Version("1.8")])
+        assert result == VersionRange.from_bounds("1.2", "1.8")
+
+    def test_unparsable_version_raises(self) -> None:
+        with pytest.raises(InvalidVersion):
+            vr(">=1.0").snap_bounds(["not a version"])
+
+    def test_multi_segment_independent(self) -> None:
+        r = vr(">=1.0,<2.0") | vr(">=3.0,<4.0")
+        result = r.snap_bounds(["1.5", "3.5"])
+        expected = VersionRange.singleton("1.5") | VersionRange.singleton("3.5")
+        assert result == expected
+
+    def test_admitted_literal_carriage(self) -> None:
+        r = vr(">=1.0,<2.0") | vr("===wat")
+        result = r.snap_bounds(["1.2", "1.8"])
+        assert result._admit == frozenset({"wat"})
+        assert result.contains("wat")
+
+    def test_rejected_literal_carriage(self) -> None:
+        r = vr(">=1.0,<2.0") - vr("===1.5")
+        result = r.snap_bounds(["1.2", "1.5", "1.8"])
+        assert result._reject == frozenset({"1.5"})
+        assert result.contains("1.5") is False
+
+    def test_arbitrary_admission_carriage(self) -> None:
+        r = VersionRange.full()
+        result = r.snap_bounds(["1.0", "2.0"])
+        assert result == r
+        assert "wat" in result
+
+    def test_pre_region_carriage(self) -> None:
+        r = vr(">=1.0a1,<2.0")
+        assert r._pre_region
+        result = r.snap_bounds(["1.0a1", "1.5"])
+        assert result._pre_region
+        assert list(result.filter(["1.0a1"])) == ["1.0a1"]
+
+    def test_configured_policy_carriage(self) -> None:
+        r = vr(">=1.0,<2.0", prereleases=False)
+        result = r.snap_bounds(["1.2", "1.8"])
+        assert result._prereleases_configured is False
+
+    def test_result_is_subset(self) -> None:
+        r = vr(">=1.0,<2.0")
+        result = r.snap_bounds(["1.2", "1.5", "1.8"])
+        assert result.is_subset(r)
+
+    def test_agrees_on_given_versions(self) -> None:
+        r = vr(">=1.0,<2.0")
+        versions = ["0.5", "1.0", "1.5", "1.9", "2.0", "3.0"]
+        result = r.snap_bounds(versions)
+        for v in versions:
+            assert result.contains(v) == r.contains(v)
+
+    def test_gap_round_trips_to_singleton(self) -> None:
+        versions = [Version("1.0"), Version("2.0"), Version("3.0")]
+        gap = VersionRange.from_bounds(
+            "1.0", "3.0", include_lower=False, include_upper=False
+        )
+        assert gap.snap_bounds(versions) == VersionRange.singleton("2.0")
+
+
+def _intervals(r: VersionRange, parts: int = 3) -> list[tuple[str | None, str | None]]:
+    """``release_intervals`` as string pairs, so cases read as version numbers."""
+    return [
+        (None if lower is None else str(lower), None if upper is None else str(upper))
+        for lower, upper in r.release_intervals(parts)
+    ]
+
+
+class TestReleaseIntervals:
+    @pytest.mark.parametrize(
+        ("spec", "intervals"),
+        [
+            ("<3.10.2", [(None, "3.10.2")]),
+            ("<=3.10.2", [(None, "3.10.3")]),
+            (">3.10.2", [("3.10.3", None)]),
+            (">=3.10.2", [("3.10.2", None)]),
+            ("==3.10.2", [("3.10.2", "3.10.3")]),
+            ("!=3.10.2", [(None, "3.10.2"), ("3.10.3", None)]),
+            ("~=3.10.2", [("3.10.2", "3.11.0")]),
+            ("==3.10.*", [("3.10.0", "3.11.0")]),
+            ("!=3.10.*", [(None, "3.10.0"), ("3.11.0", None)]),
+            ("==3.10.4.*", [("3.10.4", "3.10.5")]),
+            (">3.10.2,<3.10.4", [("3.10.3", "3.10.4")]),
+        ],
+    )
+    def test_operator_projections(
+        self, spec: str, intervals: list[tuple[str | None, str | None]]
+    ) -> None:
+        assert _intervals(vr(spec)) == intervals
+
+    def test_dev0_upper_bound_reports_its_release(self) -> None:
+        # ``<X`` is carried as an exclusive bound at ``X.dev0``, and ``X``
+        # itself is the first release it excludes.
+        assert _intervals(vr("<3.11.4")) == [(None, "3.11.4")]
+
+    def test_dev0_lower_bound_reports_its_release(self) -> None:
+        assert _intervals(vr(">=3.11.4.dev0")) == [("3.11.4", None)]
+
+    def test_upper_over_a_prerelease_reports_its_final(self) -> None:
+        assert _intervals(vr("<=3.11.4rc1")) == [(None, "3.11.4")]
+
+    def test_lower_over_a_prerelease_reports_its_final(self) -> None:
+        assert _intervals(vr(">=3.11.4rc1")) == [("3.11.4", None)]
+
+    def test_post_lower_starts_above_its_release(self) -> None:
+        # 3.11.4 does not satisfy >=3.11.4.post1, so the run opens at 3.11.5.
+        assert _intervals(vr(">=3.11.4.post1")) == [("3.11.5", None)]
+
+    def test_post_singleton_reports_nothing(self) -> None:
+        # ==3.11.4.post1 holds no release: 3.11.4 sorts below it and 3.11.5
+        # above it.
+        assert vr("==3.11.4.post1").release_intervals(3) == ()
+
+    def test_local_bounds_report_the_releases_between_them(self) -> None:
+        # 1.0 sorts below 1.0+local and 2.0 sorts below 2.0+local, so the run
+        # opens at 1.0.1 and closes after 2.0.0.
+        r = VersionRange.from_bounds("1.0+local", "2.0+local")
+        assert _intervals(r) == [("1.0.1", "2.0.1")]
+
+    def test_lower_finer_than_the_grid_rounds_up(self) -> None:
+        assert _intervals(vr(">=2.3.0.1")) == [("2.3.1", None)]
+
+    def test_inclusive_upper_admits_its_own_release(self) -> None:
+        r = VersionRange.from_bounds("1.0", "2.0")
+        assert _intervals(r) == [("1.0.0", "2.0.1")]
+
+    def test_exclusive_upper_excludes_its_own_release(self) -> None:
+        r = VersionRange.from_bounds("1.0", "2.0", include_upper=False)
+        assert _intervals(r) == [("1.0.0", "2.0.0")]
+
+    def test_exclusive_lower_excludes_its_own_release(self) -> None:
+        r = VersionRange.from_bounds("1.0", "2.0", include_lower=False)
+        assert _intervals(r) == [("1.0.1", "2.0.1")]
+
+    def test_singleton_reports_one_release(self) -> None:
+        assert _intervals(VersionRange.singleton("1.0")) == [("1.0.0", "1.0.1")]
+
+    def test_local_singleton_reports_nothing(self) -> None:
+        # No plain release equals 1.0+local, so the projection is empty.
+        assert VersionRange.singleton("1.0+local").release_intervals(3) == ()
+
+    def test_adjacent_intervals_merge_at_a_shared_edge(self) -> None:
+        merged = vr(">=3.10.1,<3.10.3") | vr("==3.10.3")
+        assert _intervals(merged) == [("3.10.1", "3.10.4")]
+
+    def test_disjoint_intervals_stay_separate(self) -> None:
+        split = vr(">=3.10.1,<3.10.3") | vr("==3.10.7")
+        assert _intervals(split) == [("3.10.1", "3.10.3"), ("3.10.7", "3.10.8")]
+
+    def test_coarse_parts_collapses_a_narrow_interval(self) -> None:
+        assert _intervals(vr("~=3.10.2"), 2) == []
+        assert _intervals(vr(">=3.11.4,<3.11.9"), 2) == []
+
+    def test_coarse_parts_rounds_a_lower_up(self) -> None:
+        assert _intervals(vr(">=3.10.2"), 2) == [("3.11", None)]
+
+    def test_single_component_grid(self) -> None:
+        assert _intervals(vr(">=3.10,<5"), 1) == [("4", "5")]
+
+    def test_empty_range_covers_nothing(self) -> None:
+        assert VersionRange.empty().release_intervals(3) == ()
+
+    def test_full_range_is_one_unbounded_interval(self) -> None:
+        assert VersionRange.full().release_intervals(3) == ((None, None),)
+
+    def test_epoch_is_carried(self) -> None:
+        assert _intervals(vr("==1!2.0.*")) == [("1!2.0.0", "1!2.1.0")]
+
+    @pytest.mark.parametrize("parts", [0, -1])
+    def test_parts_below_one_is_rejected(self, parts: int) -> None:
+        with pytest.raises(ValueError, match="parts must be at least 1"):
+            vr(">=3.11.4").release_intervals(parts)
+
+    def test_parts_above_the_cap_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="parts must be at most 128"):
+            vr(">=3.11.4").release_intervals(129)
+
+    def test_parts_at_the_cap_is_accepted(self) -> None:
+        (interval,) = vr(">=3.11.4").release_intervals(128)
+        assert interval[0] is not None
+        assert len(interval[0].release) == 128
+
+
+class TestReleaseIntervalsFloor:
+    """Runs that stop at or below the smallest release of their grid."""
+
+    @pytest.mark.parametrize(
+        ("spec", "parts", "intervals"),
+        [
+            ("!=0", 1, [("1", None)]),
+            ("!=0", 2, [("0.1", None)]),
+            ("!=0.0", 2, [("0.1", None)]),
+            ("<0.dev1", 1, []),
+            ("<=0.dev0", 2, []),
+            ("==0.dev0", 1, []),
+        ],
+    )
+    def test_a_run_below_the_floor_is_dropped(
+        self, spec: str, parts: int, intervals: list[tuple[str | None, str | None]]
+    ) -> None:
+        # 0 is the smallest release on every grid, so ``(-inf, 0)`` holds none
+        # of them however the range reaches it.
+        assert _intervals(vr(spec), parts) == intervals
+
+    def test_from_bounds_below_the_floor(self) -> None:
+        # The range is not empty: it holds 0.dev0 and 0a1, neither a release.
+        r = VersionRange.from_bounds(None, "0", include_upper=False)
+        assert not r.is_empty
+        assert r.release_intervals(1) == ()
+
+
+class TestReleaseIntervalsLiterals:
+    """``===`` literals reach the grid where they are spelled as a release."""
+
+    def test_rejected_literal_splits_a_run(self) -> None:
+        r = vr(">=1.0,<4.0") - vr("===2.0")
+        assert _intervals(r, 2) == [("1.0", "2.0"), ("2.1", "4.0")]
+        assert r.contains("2.0") is False
+
+    def test_rejected_literal_at_the_start_of_a_run(self) -> None:
+        r = vr(">=2.0,<4.0") - vr("===2.0")
+        assert _intervals(r, 2) == [("2.1", "4.0")]
+
+    def test_rejected_literal_at_the_end_of_a_run(self) -> None:
+        r = VersionRange.from_bounds("1.0", "2.0") - vr("===2.0")
+        assert _intervals(r, 2) == [("1.0", "2.0")]
+
+    def test_rejected_literal_empties_a_run(self) -> None:
+        r = vr("==2.0.*") - vr("===2.0")
+        assert r.release_intervals(2) == ()
+
+    def test_rejected_literal_leaves_other_runs_alone(self) -> None:
+        r = (vr(">=1.0,<2.0") | vr(">=5.0,<6.0")) - vr("===5.5")
+        assert _intervals(r, 2) == [("1.0", "2.0"), ("5.0", "5.5"), ("5.6", "6.0")]
+
+    def test_admitted_literal_becomes_its_own_run(self) -> None:
+        r = vr(">=5.0,<6.0") | vr("===1.0")
+        assert _intervals(r, 2) == [("1.0", "1.1"), ("5.0", "6.0")]
+
+    def test_admitted_literal_extends_the_run_it_touches(self) -> None:
+        r = vr(">=1.0,<2.0") | vr("===2.0")
+        assert _intervals(r, 2) == [("1.0", "2.1")]
+
+    def test_admitted_literal_sorts_after_an_unbounded_start(self) -> None:
+        r = vr("<2.0") | vr("===5.0")
+        assert _intervals(r, 2) == [(None, "2.0"), ("5.0", "5.1")]
+
+    def test_a_literal_reaches_only_the_grid_it_is_spelled_on(self) -> None:
+        r = vr("===1.5")
+        assert r.contains("1.5")
+        assert _intervals(r, 2) == [("1.5", "1.6")]
+        assert r.release_intervals(1) == ()
+        assert r.release_intervals(3) == ()
+
+    @pytest.mark.parametrize("literal", ["===01.5", "===1.5.post1"])
+    def test_a_literal_spelled_unlike_its_release_is_not_projected(
+        self, literal: str
+    ) -> None:
+        # Both parse to a two-component release, and neither is the string
+        # that release matches.
+        r = vr(">=1.0,<4.0") - vr(literal)
+        assert _intervals(r, 2) == [("1.0", "4.0")]
+
+    def test_an_unparsable_literal_is_not_projected(self) -> None:
+        r = vr(">=1.0,<2.0") | vr("===wat")
+        assert r.contains("wat")
+        assert _intervals(r, 2) == [("1.0", "2.0")]
