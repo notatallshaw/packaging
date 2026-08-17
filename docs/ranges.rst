@@ -266,6 +266,56 @@ versions is left alone.
 
 .. versionadded:: 26.4
 
+Projecting onto a release grid
+------------------------------
+
+Some decisions are keyed on a release number rather than on a full version, an
+interpreter version being the common case. :meth:`VersionRange.release_intervals`
+projects a range onto the releases written with a fixed number of numeric
+components and returns the runs of them the range contains, as half-open
+``[lower, upper)`` pairs with ``None`` for an unbounded side:
+
+.. doctest::
+
+    >>> SpecifierSet(">=3.11.4").to_range().release_intervals(3)
+    ((<Version('3.11.4')>, None),)
+    >>> SpecifierSet("!=3.11.4").to_range().release_intervals(3)
+    ((None, <Version('3.11.4')>), (<Version('3.11.5')>, None))
+
+The edges are where the range stops admitting releases, so a caller can split
+on them instead of testing every release. Only the grid points are reported:
+a range that holds finer versions but no release of that shape reports nothing,
+and pre-releases, post-releases and locals between two releases are invisible.
+
+.. doctest::
+
+    >>> SpecifierSet(">=3.10.2").to_range().release_intervals(2)
+    ((<Version('3.11')>, None),)
+    >>> SpecifierSet("~=3.10.2").to_range().release_intervals(2)
+    ()
+
+``~=3.10.2`` admits everything from ``3.10.2`` up to ``3.11``, and no
+two-component release sits in there, so on that grid it covers nothing.
+
+A release falls in one of the runs exactly when :meth:`VersionRange.contains`
+accepts it, ``===`` literals included. A literal matches as a string, so it
+reaches the grid only where it is spelled the way one of these releases is:
+
+.. doctest::
+
+    >>> split = SpecifierSet(">=2.0,<4.0").to_range()
+    >>> split -= SpecifierSet("===3.0").to_range()
+    >>> split.release_intervals(2)
+    ((<Version('2.0')>, <Version('3.0')>), (<Version('3.1')>, <Version('4.0')>))
+    >>> split.release_intervals(1)
+    ((<Version('2')>, <Version('4')>),)
+
+``===3.0`` removes the two-component release ``3.0``, splitting the run. On the
+one-component grid it removes nothing, because ``3`` and ``3.0`` are different
+strings and the literal only matches the second.
+
+.. versionadded:: 26.4
+
 Recovering a specifier set
 --------------------------
 

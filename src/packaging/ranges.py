@@ -61,6 +61,16 @@ T = TypeVar("T")
 UnparsedVersion = Version | str
 UnparsedVersionVar = TypeVar("UnparsedVersionVar", bound=UnparsedVersion)
 
+#: One run of :meth:`VersionRange.release_intervals`: a half-open ``[lower,
+#: upper)`` pair of releases, ``None`` on a side meaning unbounded there.
+_ReleaseRun = tuple[Version | None, Version | None]
+
+#: The most release components :meth:`VersionRange.release_intervals` will
+#: project onto. Each bound of the range becomes a release carrying that many
+#: components, so the work and the length of the returned versions both grow
+#: with the caller's ``parts``. No release is written anywhere near this long.
+_MAX_RELEASE_PARTS = 128
+
 #: The most ``!=`` exclusion fragments (``!=V`` points or ``!=P.*`` prefixes)
 #: that :meth:`VersionRange.to_specifier_set` will materialize to spell a
 #: single gap or run. Every site that expands a version-number-driven chain
@@ -313,6 +323,137 @@ def _interval_slice(
         stop = bisect.bisect_left(versions, True, key=lambda v: not closes(v))
 
     return start, stop
+
+
+def _next_release(release: Version) -> Version:
+    """The release one step above ``release`` on its own grid.
+
+    Release components have no upper limit, so the step bumps the last
+    component and never carries into the one above it.
+    """
+    components = release.release
+    return Version.from_parts(
+        epoch=release.epoch, release=(*components[:-1], components[-1] + 1)
+    )
+
+
+def _grid_release(version: Version, parts: int, *, strict: bool) -> Version:
+    """The smallest release of ``parts`` components at or above ``version``.
+
+    With ``strict``, the smallest one strictly above it instead. Truncate
+    ``version``'s release to ``parts`` components, padding a shorter one with
+    zeros: no release of that shape lies between the result and ``version``,
+    so the answer is the result itself or its successor.
+    """
+    release = version.release[:parts]
+    padded = (*release, *((0,) * (parts - len(release))))
+    candidate = Version.from_parts(epoch=version.epoch, release=padded)
+    if candidate > version or (not strict and candidate == version):
+        return candidate
+    return _next_release(candidate)
+
+
+def _first_release_inside(lower: LowerBound, parts: int) -> Version | None:
+    """The smallest ``parts``-component release ``lower`` admits.
+
+    ``None`` when the bound is unbounded below, since every release is then
+    admitted. An inclusive bound admits its own version, so the search starts
+    at it; an exclusive one starts just above. A boundary marker sits above the
+    version it marks and below the next release, so either kind starts just
+    above that version.
+
+    The marker is read through version order, which matches the bound's own
+    membership predicate for every ``AFTER_POSTS`` marker the engine builds:
+    none carries a ``dev`` segment, the one shape where the two disagree.
+    """
+    value = lower.version
+    if value is None:
+        return None
+    if isinstance(value, BoundaryVersion):
+        return _grid_release(value.version, parts, strict=True)
+    return _grid_release(value, parts, strict=not lower.inclusive)
+
+
+def _first_release_above(upper: UpperBound, parts: int) -> Version | None:
+    """The smallest ``parts``-component release ``upper`` excludes.
+
+    ``None`` when the bound is unbounded above. The mirror of
+    :func:`_first_release_inside`, with the inclusivity read the other way
+    round: an inclusive bound admits its own version, so the first release it
+    excludes lies strictly above.
+    """
+    value = upper.version
+    if value is None:
+        return None
+    if isinstance(value, BoundaryVersion):
+        return _grid_release(value.version, parts, strict=True)
+    return _grid_release(value, parts, strict=upper.inclusive)
+
+
+def _named_releases(literals: frozenset[str], parts: int) -> set[Version]:
+    """The ``parts``-component releases ``literals`` names.
+
+    A ``===`` literal matches as a string, so it names a release only when it
+    is spelled the way that release is: ``===3.11`` names ``3.11`` on the
+    two-component grid and nothing on the three-component one.
+    """
+    named: set[Version] = set()
+    for literal in literals:
+        parsed = coerce_version(literal)
+        if parsed is None or len(parsed.release) != parts:
+            continue
+        release = Version.from_parts(epoch=parsed.epoch, release=parsed.release)
+        if str(release) == literal:
+            named.add(release)
+    return named
+
+
+def _run_holds_a_release(run: _ReleaseRun, floor: Version) -> bool:
+    """Whether ``run`` holds at least one release, ``floor`` being the smallest."""
+    start, stop = run
+    return stop is None or stop > (floor if start is None else start)
+
+
+def _without_release(runs: list[_ReleaseRun], release: Version) -> list[_ReleaseRun]:
+    """``runs`` with ``release`` taken out, splitting the run that held it."""
+    successor = _next_release(release)
+    remaining: list[_ReleaseRun] = []
+    for start, stop in runs:
+        holds = (start is None or start <= release) and (stop is None or stop > release)
+        if not holds:
+            remaining.append((start, stop))
+            continue
+
+        if start is None or start < release:
+            remaining.append((start, release))
+        if stop is None or successor < stop:
+            remaining.append((successor, stop))
+    return remaining
+
+
+def _coalesce_runs(runs: list[_ReleaseRun], floor: Version) -> list[_ReleaseRun]:
+    """``runs`` in ascending order, with the ones that meet or overlap joined.
+
+    ``floor`` is the bottom of the grid, standing in for the start of an
+    unbounded-below run so that the sort can order it against the rest.
+    """
+    ordered = sorted(runs, key=lambda run: floor if run[0] is None else run[0])
+
+    merged: list[_ReleaseRun] = []
+    for start, stop in ordered:
+        if not merged:
+            merged.append((start, stop))
+            continue
+
+        last_start, last_stop = merged[-1]
+        if last_stop is not None and start is not None and start > last_stop:
+            merged.append((start, stop))
+        else:
+            merged[-1] = (
+                last_start,
+                None if last_stop is None or stop is None else max(last_stop, stop),
+            )
+    return merged
 
 
 # Repr helpers:
@@ -1871,6 +2012,74 @@ class VersionRange:
             pre_region=self._pre_region,
             prereleases_configured=self._prereleases_configured,
         )
+
+    def release_intervals(self, parts: int) -> tuple[_ReleaseRun, ...]:
+        """The runs of ``parts``-component releases this range contains.
+
+        Projects the range onto the releases written with exactly ``parts``
+        numeric components (``3.11.4`` at ``parts=3``, ``3.11`` at ``parts=2``)
+        and returns the maximal half-open ``[lower, upper)`` runs of them it
+        contains, in ascending order. ``None`` on a side is unbounded there. A
+        release falls inside one of the runs exactly when :meth:`contains`
+        accepts it.
+
+        A caller that keys a decision on a release number, an interpreter
+        version being the common case, works on that number's grid rather than
+        on the whole PEP 440 line. The projection says which grid points the
+        range admits and where it stops admitting them, so the caller can split
+        on those edges instead of testing every point.
+
+        >>> SpecifierSet(">=3.11.4").to_range().release_intervals(3)
+        ((<Version('3.11.4')>, None),)
+        >>> SpecifierSet("==3.11.4").to_range().release_intervals(3)
+        ((<Version('3.11.4')>, <Version('3.11.5')>),)
+        >>> SpecifierSet("!=3.11.4").to_range().release_intervals(3)
+        ((None, <Version('3.11.4')>), (<Version('3.11.5')>, None))
+
+        Only the grid points themselves are reported. Pre-releases, posts and
+        locals sitting between two of them are invisible, and a range holding
+        none of them reports nothing even when it holds finer versions:
+
+        >>> SpecifierSet(">=3.10.2").to_range().release_intervals(2)
+        ((<Version('3.11')>, None),)
+        >>> SpecifierSet("~=3.10.2").to_range().release_intervals(2)
+        ()
+
+        A ``===`` literal matches as a string, so it reaches the grid only when
+        it is spelled the way one of these releases is:
+
+        >>> SpecifierSet("===3.11").to_range().release_intervals(2)
+        ((<Version('3.11')>, <Version('3.12')>),)
+        >>> SpecifierSet("===3.11").to_range().release_intervals(3)
+        ()
+
+        :param parts: how many numeric components a release on the grid has.
+        :raises ValueError: if ``parts`` is less than 1 or more than 128.
+
+        .. versionadded:: 26.4
+        """
+        if parts < 1:
+            raise ValueError(f"parts must be at least 1, got {parts}")
+        if parts > _MAX_RELEASE_PARTS:
+            raise ValueError(f"parts must be at most {_MAX_RELEASE_PARTS}, got {parts}")
+
+        floor = Version.from_parts(release=(0,) * parts)
+        runs = [
+            (_first_release_inside(lower, parts), _first_release_above(upper, parts))
+            for lower, upper in self._bounds
+        ]
+
+        # A ``===`` literal decides membership ahead of the bounds, so it takes
+        # its own release out of a run or adds a run holding only that release.
+        for release in _named_releases(self._reject, parts):
+            runs = _without_release(runs, release)
+        runs.extend(
+            (release, _next_release(release))
+            for release in _named_releases(self._admit, parts)
+        )
+
+        occupied = [run for run in runs if _run_holds_a_release(run, floor)]
+        return tuple(_coalesce_runs(occupied, floor))
 
     @classmethod
     def _from_specifier_set(cls, specifier_set: SpecifierSet) -> VersionRange:
