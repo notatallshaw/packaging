@@ -30,6 +30,7 @@ __all__ = [
     "UndefinedComparison",
     "UndefinedEnvironmentName",
     "default_environment",
+    "prepare_environment",
 ]
 
 
@@ -267,8 +268,10 @@ def _normalize(
     # > When comparing extra names, tools MUST normalize the names being
     # > compared using the semantics outlined in PEP 503 for names
     if key == "extra":
-        assert isinstance(rhs, str), "extra value must be a string"
-        # Both sides are normalized at this point already
+        if not isinstance(rhs, str):
+            raise UndefinedComparison(f"Marker 'extra' must be a string, not {rhs!r}.")
+        # Normalization happens before this: the parser normalizes the literal,
+        # prepare_environment the value.
         return (lhs, rhs)
     if key in MARKERS_ALLOWING_SET:
         if isinstance(rhs, str):  # pragma: no cover
@@ -281,7 +284,7 @@ def _normalize(
 
 
 def _lookup_environment(
-    environment: dict[str, str | AbstractSet[str]], key: str
+    environment: Mapping[str, str | AbstractSet[str]], key: str
 ) -> str | AbstractSet[str]:
     try:
         return environment[key]
@@ -290,7 +293,7 @@ def _lookup_environment(
 
 
 def _evaluate_markers(
-    markers: MarkerList, environment: dict[str, str | AbstractSet[str]]
+    markers: MarkerList, environment: Mapping[str, str | AbstractSet[str]]
 ) -> bool:
     groups: list[list[bool]] = [[]]
 
@@ -376,6 +379,61 @@ def default_environment() -> Environment:
         :meth:`Marker.evaluate` to evaluate against different values.
     """
     return cast("Environment", dict(_cached_default_environment()))
+
+
+def prepare_environment(
+    environment: Mapping[str, str | AbstractSet[str]] | None = None,
+    context: EvaluateContext = "metadata",
+) -> dict[str, str | AbstractSet[str]]:
+    """Build the environment mapping a marker is evaluated against.
+
+    The result is :func:`default_environment` extended with the keys ``context``
+    defines, updated from ``environment``, with ``extra`` canonicalized and
+    ``python_full_version`` repaired for non-tagged builds.
+
+    :meth:`Marker.evaluate` does this on every call. Code evaluating many
+    markers against one environment can do it once here and pass the result to
+    :meth:`Marker.evaluate_prepared`.
+
+    :param environment: Mapping containing keys and values to override the
+       detected environment.
+    :param EvaluateContext context: The context in which the marker is
+        evaluated, which influences what marker names are considered valid.
+        Accepted values are ``"metadata"`` (for core metadata; default),
+        ``"lock_file"``, and ``"requirement"`` (i.e. all other situations).
+    :returns: A new dict on every call, which the caller may mutate. The copy
+        is shallow, so its values are the objects passed in ``environment``.
+
+    >>> from packaging.markers import Marker, prepare_environment
+    >>> environment = prepare_environment({"extra": "Fancy.Feature"})
+    >>> environment["extra"]
+    'fancy-feature'
+    >>> Marker('extra == "fancy-feature"').evaluate_prepared(environment)
+    True
+
+    .. versionadded:: 26.4
+    """
+    current_environment = cast(
+        "dict[str, str | AbstractSet[str]]", default_environment()
+    )
+    if context == "lock_file":
+        current_environment |= {
+            "extras": frozenset(),
+            "dependency_groups": frozenset(),
+        }
+    elif context == "metadata":
+        current_environment["extra"] = ""
+
+    if environment is not None:
+        current_environment |= environment
+        if "extra" in current_environment:
+            # The API used to allow setting extra to None. We need to handle
+            # this case for backwards compatibility. Also skip running
+            # normalize name if extra is empty.
+            extra = cast("str | None", current_environment["extra"])
+            current_environment["extra"] = canonicalize_name(extra) if extra else ""
+
+    return _repair_python_full_version(current_environment)
 
 
 class Marker:
@@ -511,7 +569,9 @@ class Marker:
 
         Return the boolean from evaluating this marker against the environment.
         The environment is determined from the current Python process unless
-        passed in explicitly.
+        passed in explicitly. This is equivalent to passing the same arguments
+        to :func:`prepare_environment` and the result to
+        :meth:`evaluate_prepared`.
 
         :param environment: Mapping containing keys and values to override the
            detected environment.
@@ -530,29 +590,47 @@ class Marker:
             Added the ``context`` parameter, which influences which marker names
             are considered valid.
         """
-        current_environment = cast(
-            "dict[str, str | AbstractSet[str]]", default_environment()
-        )
-        if context == "lock_file":
-            current_environment |= {
-                "extras": frozenset(),
-                "dependency_groups": frozenset(),
-            }
-        elif context == "metadata":
-            current_environment["extra"] = ""
-
-        if environment is not None:
-            current_environment |= environment
-            if "extra" in current_environment:
-                # The API used to allow setting extra to None. We need to handle
-                # this case for backwards compatibility. Also skip running
-                # normalize name if extra is empty.
-                extra = cast("str | None", current_environment["extra"])
-                current_environment["extra"] = canonicalize_name(extra) if extra else ""
-
+        # Not evaluate_prepared: it is this same call, so going through it
+        # would only add a frame.
         return _evaluate_markers(
-            self._markers, _repair_python_full_version(current_environment)
+            self._markers, prepare_environment(environment, context)
         )
+
+    def evaluate_prepared(
+        self, environment: Mapping[str, str | AbstractSet[str]]
+    ) -> bool:
+        """Evaluate a marker against an already-prepared environment.
+
+        ``environment`` is read as given: unlike :meth:`evaluate`, no detected
+        values are filled in, no context keys are added, ``extra`` is not
+        canonicalized and ``python_full_version`` is not repaired. Pass an
+        ``extra`` through :func:`packaging.utils.canonicalize_name` first, since
+        :pep:`685` compares normalized names and the marker's own literal was
+        normalized when it was parsed.
+
+        A mapping :func:`prepare_environment` did not build can answer rather
+        than raise: on a non-tagged build :func:`default_environment` reports a
+        ``python_full_version`` ending in ``+``, which no version comparison
+        can parse, so both ``>=`` and ``<`` against it are ``False``.
+
+        :param environment: The environment to evaluate against, normally from
+            :func:`prepare_environment`.
+        :raises UndefinedComparison: If the marker uses a comparison on values
+            that are not valid versions per the :ref:`specification of version
+            specifiers <pypug:version-specifiers>`, or ``extra`` holds
+            something other than a string.
+        :raises UndefinedEnvironmentName: If the marker references a value that
+            is missing from ``environment``.
+        :returns: ``True`` if the marker matches, otherwise ``False``.
+
+        >>> from packaging.markers import Marker, prepare_environment
+        >>> environment = prepare_environment({"sys_platform": "linux"})
+        >>> Marker("sys_platform == 'linux'").evaluate_prepared(environment)
+        True
+
+        .. versionadded:: 26.4
+        """
+        return _evaluate_markers(self._markers, environment)
 
 
 def _pep440_python_full_version(python_full_version: str) -> str:
