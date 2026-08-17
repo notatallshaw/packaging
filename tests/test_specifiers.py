@@ -3117,8 +3117,11 @@ class TestIsUnsatisfiable:
         [(lower, upper)] = Specifier(">=1.0")._to_ranges()
         assert lower.__eq__(object()) is NotImplemented
         assert lower.__lt__(object()) is NotImplemented  # type: ignore[operator]
+        assert lower.__gt__(object()) is NotImplemented  # type: ignore[operator]
+        assert lower.__le__(object()) is NotImplemented  # type: ignore[operator]
         assert upper.__eq__(object()) is NotImplemented
         assert upper.__lt__(object()) is NotImplemented  # type: ignore[operator]
+        assert upper.__gt__(object()) is NotImplemented  # type: ignore[operator]
 
 
 @pytest.mark.parametrize(

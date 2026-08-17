@@ -82,6 +82,11 @@ class BoundaryVersion:
         "version",
     )
 
+    #: A boundary sits between two versions and has no PEP 440 comparison key.
+    #: Bound ordering reads the attribute off either operand type, so declaring
+    #: it here routes a boundary to the version operators with no type check.
+    _key_cache: None = None
+
     def __init__(self, version: Version, kind: BoundaryKind) -> None:
         self.version = version
         self.kind = kind
@@ -224,10 +229,61 @@ class LowerBound:
             return other.version is not None
         if other.version is None:
             return False
-        if self.version != other.version:
-            return self.version < other.version
+
+        # Reading both comparison keys costs less than dispatching Version's
+        # ``!=`` and then ``<``. A boundary has no key and a version may not
+        # have built one yet, so either side missing takes the operators.
+        self_key = self.version._key_cache
+        other_key = other.version._key_cache
+        if self_key is None or other_key is None:
+            if self.version != other.version:
+                return self.version < other.version
+        elif self_key != other_key:
+            return self_key < other_key
+
         # [v < (v: inclusive starts earlier.
         return self.inclusive and not other.inclusive
+
+    # ``__gt__`` and ``__le__`` are written out rather than left to
+    # functools.total_ordering, whose shims call ``__lt__`` and then ``__eq__``
+    # whenever that answered False. ``intersect_ranges`` reaches ``__gt__``
+    # through ``max`` and ``_union_ranges`` reaches ``__le__`` through its
+    # merge, so ``__ge__`` is the one left derived.
+    def __gt__(self, other: LowerBound) -> bool:
+        if not isinstance(other, LowerBound):
+            return NotImplemented
+        if self.version is None:
+            return False
+        if other.version is None:
+            return True
+
+        self_key = self.version._key_cache
+        other_key = other.version._key_cache
+        if self_key is None or other_key is None:
+            if self.version != other.version:
+                return other.version < self.version
+        elif self_key != other_key:
+            return other_key < self_key
+
+        return other.inclusive and not self.inclusive
+
+    def __le__(self, other: LowerBound) -> bool:
+        if not isinstance(other, LowerBound):
+            return NotImplemented
+        if self.version is None:
+            return True
+        if other.version is None:
+            return False
+
+        self_key = self.version._key_cache
+        other_key = other.version._key_cache
+        if self_key is None or other_key is None:
+            if self.version != other.version:
+                return self.version < other.version
+        elif self_key != other_key:
+            return self_key < other_key
+
+        return self.inclusive or not other.inclusive
 
     def __hash__(self) -> int:
         return hash((self.version, self.inclusive))
@@ -288,10 +344,39 @@ class UpperBound:
             return False
         if other.version is None:
             return True
-        if self.version != other.version:
-            return self.version < other.version
+
+        # See LowerBound.__lt__ for why this reads the keys.
+        self_key = self.version._key_cache
+        other_key = other.version._key_cache
+        if self_key is None or other_key is None:
+            if self.version != other.version:
+                return self.version < other.version
+        elif self_key != other_key:
+            return self_key < other_key
+
         # v) < v]: exclusive ends earlier.
         return not self.inclusive and other.inclusive
+
+    # Written out for the same reason as on ``LowerBound``, and only ``__gt__``,
+    # because ``_union_ranges`` coalesces with ``max`` over two upper bounds
+    # while ``intersect_ranges``'s ``min`` reaches ``__lt__`` directly.
+    def __gt__(self, other: UpperBound) -> bool:
+        if not isinstance(other, UpperBound):
+            return NotImplemented
+        if self.version is None:
+            return other.version is not None
+        if other.version is None:
+            return False
+
+        self_key = self.version._key_cache
+        other_key = other.version._key_cache
+        if self_key is None or other_key is None:
+            if self.version != other.version:
+                return other.version < self.version
+        elif self_key != other_key:
+            return other_key < self_key
+
+        return self.inclusive and not other.inclusive
 
     def __hash__(self) -> int:
         return hash((self.version, self.inclusive))
