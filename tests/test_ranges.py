@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 
 from packaging._ranges import (
@@ -17,6 +19,9 @@ from packaging._ranges import (
 from packaging.ranges import _MAX_EXCLUSION_RUN, VersionRange
 from packaging.specifiers import Specifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 def vr(spec: str, prereleases: bool | None = None) -> VersionRange:
@@ -1864,6 +1869,196 @@ class TestUnboundedEnds:
         a, b = UpperBound(None, True), UpperBound(None, False)
         assert (a < b, a > b, a <= b, a >= b) == (False, False, True, True)
         assert (b < a, b > a, b <= a, b >= a) == (False, False, True, True)
+
+
+# One bound in an ordering table: a spelling for bound_value, and an inclusivity.
+BoundSpelling = tuple[str, bool]
+
+
+def bound_value(spelling: str) -> Version | BoundaryVersion | None:
+    """The inner value a bound spelling names, with no comparison key built.
+
+    ``""`` is the unbounded end and a bare version parses as itself. The ``/L``
+    and ``/P`` suffixes are the AFTER_LOCALS and AFTER_POSTS boundaries just
+    above that version.
+    """
+    if not spelling:
+        return None
+
+    version, _, suffix = spelling.partition("/")
+    if not suffix:
+        return Version(version)
+
+    kind = BoundaryKind.AFTER_LOCALS if suffix == "L" else BoundaryKind.AFTER_POSTS
+    return BoundaryVersion(Version(version), kind)
+
+
+def warm_key(bound: LowerBound | UpperBound) -> None:
+    """Build the comparison key of a bound's version, where it has one.
+
+    A boundary sits between versions and has no key, and an unbounded end has
+    no version, so both are left as they are.
+    """
+    if isinstance(bound.version, Version):
+        bound.version._key  # noqa: B018
+
+
+# (left, right, expected), where expected is -1, 0 or 1 for the order the two
+# lower bounds sort in.
+LOWER_BOUND_ORDER: list[tuple[BoundSpelling, BoundSpelling, int]] = [
+    (("", False), ("", False), 0),
+    (("", False), ("1.0", True), -1),
+    (("1.0", True), ("", False), 1),
+    (("1.0", True), ("2.0", True), -1),
+    (("2.0", True), ("1.0", True), 1),
+    (("1.0", True), ("1.0", False), -1),
+    (("1.0", False), ("1.0", True), 1),
+    (("1.0", True), ("1.0", True), 0),
+    (("1.0", False), ("1.0", False), 0),
+    (("1.0+local", True), ("1.0+local", False), -1),
+    (("1.0", True), ("1.0/L", False), -1),
+    (("1.0/L", False), ("1.0", True), 1),
+    (("1.0/L", False), ("1.0/P", False), -1),
+    (("1.0/P", False), ("1.0/L", False), 1),
+    (("1.0/L", True), ("1.0/L", False), -1),
+    (("1.0/L", False), ("1.0/L", False), 0),
+    (("1.0/L", False), ("2.0", True), -1),
+    (("2.0", True), ("1.0/L", False), 1),
+]
+
+# The same for upper bounds, where the unbounded end is +inf and an exclusive
+# bound ends earlier than an inclusive one.
+UPPER_BOUND_ORDER: list[tuple[BoundSpelling, BoundSpelling, int]] = [
+    (("", False), ("", False), 0),
+    (("", False), ("1.0", True), 1),
+    (("1.0", True), ("", False), -1),
+    (("1.0", True), ("2.0", True), -1),
+    (("2.0", True), ("1.0", True), 1),
+    (("1.0", False), ("1.0", True), -1),
+    (("1.0", True), ("1.0", False), 1),
+    (("1.0", True), ("1.0", True), 0),
+    (("1.0", False), ("1.0", False), 0),
+    (("1.0+local", False), ("1.0+local", True), -1),
+    (("1.0", True), ("1.0/L", True), -1),
+    (("1.0/L", True), ("1.0", True), 1),
+    (("1.0/L", True), ("1.0/P", True), -1),
+    (("1.0/P", True), ("1.0/L", True), 1),
+    (("1.0/L", False), ("1.0/L", True), -1),
+    (("1.0/L", True), ("1.0/L", True), 0),
+    (("1.0/L", True), ("2.0", False), -1),
+    (("2.0", False), ("1.0/L", True), 1),
+]
+
+
+class TestBoundOrdering:
+    """Bound ordering off the versions' cached comparison keys.
+
+    A bound orders on ``Version._key_cache`` where both sides have built one,
+    and falls back to the version operators otherwise. A boundary never has a
+    key, so it always takes the fallback. Each table runs twice, once over warm
+    bounds and once over fresh ones, so both paths answer the same rows.
+    """
+
+    @staticmethod
+    def lower(spelling: BoundSpelling) -> LowerBound:
+        return LowerBound(bound_value(spelling[0]), spelling[1])
+
+    @staticmethod
+    def upper(spelling: BoundSpelling) -> UpperBound:
+        return UpperBound(bound_value(spelling[0]), spelling[1])
+
+    @pytest.mark.parametrize(("left", "right", "expected"), LOWER_BOUND_ORDER)
+    def test_lower_bounds_order_on_cached_keys(
+        self, left: BoundSpelling, right: BoundSpelling, expected: int
+    ) -> None:
+        a, b = self.lower(left), self.lower(right)
+        warm_key(a)
+        warm_key(b)
+
+        assert (a < b) is (expected < 0)
+        assert (a > b) is (expected > 0)
+        assert (a <= b) is (expected <= 0)
+        assert (a >= b) is (expected >= 0)
+        assert (a == b) is (expected == 0)
+
+    @pytest.mark.parametrize(("left", "right", "expected"), LOWER_BOUND_ORDER)
+    def test_lower_bounds_order_without_cached_keys(
+        self, left: BoundSpelling, right: BoundSpelling, expected: int
+    ) -> None:
+        # A fresh pair per operator, because comparing two versions builds both
+        # their keys and the operator after it would take the cached path.
+        assert (self.lower(left) < self.lower(right)) is (expected < 0)
+        assert (self.lower(left) > self.lower(right)) is (expected > 0)
+        assert (self.lower(left) <= self.lower(right)) is (expected <= 0)
+        assert (self.lower(left) >= self.lower(right)) is (expected >= 0)
+        assert (self.lower(left) == self.lower(right)) is (expected == 0)
+
+    @pytest.mark.parametrize(("left", "right", "expected"), UPPER_BOUND_ORDER)
+    def test_upper_bounds_order_on_cached_keys(
+        self, left: BoundSpelling, right: BoundSpelling, expected: int
+    ) -> None:
+        a, b = self.upper(left), self.upper(right)
+        warm_key(a)
+        warm_key(b)
+
+        assert (a < b) is (expected < 0)
+        assert (a > b) is (expected > 0)
+        assert (a <= b) is (expected <= 0)
+        assert (a >= b) is (expected >= 0)
+        assert (a == b) is (expected == 0)
+
+    @pytest.mark.parametrize(("left", "right", "expected"), UPPER_BOUND_ORDER)
+    def test_upper_bounds_order_without_cached_keys(
+        self, left: BoundSpelling, right: BoundSpelling, expected: int
+    ) -> None:
+        assert (self.upper(left) < self.upper(right)) is (expected < 0)
+        assert (self.upper(left) > self.upper(right)) is (expected > 0)
+        assert (self.upper(left) <= self.upper(right)) is (expected <= 0)
+        assert (self.upper(left) >= self.upper(right)) is (expected >= 0)
+        assert (self.upper(left) == self.upper(right)) is (expected == 0)
+
+    def test_a_boundary_and_a_fresh_version_report_no_key(self) -> None:
+        # One ``is None`` test detects both operand kinds that take the
+        # fallback, which is why ordering needs no type check to tell them.
+        boundary = BoundaryVersion(Version("1.0"), BoundaryKind.AFTER_LOCALS)
+        assert boundary._key_cache is None
+        assert Version("1.0")._key_cache is None
+
+    def test_built_keys_answer_without_the_version_operators(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Warm bounds order on their keys, dispatching no version operator.
+
+        The key path and the fallback answer alike, so nothing else in the suite
+        notices if the key read stops happening.
+        """
+        dispatched: list[str] = []
+
+        def recorder(name: str) -> Callable[[Version, object], bool]:
+            original: Callable[[Version, object], bool] = getattr(Version, name)
+
+            def record(self: Version, other: object) -> bool:
+                dispatched.append(name)
+                return original(self, other)
+
+            return record
+
+        for operator in ("__eq__", "__ne__", "__lt__"):
+            monkeypatch.setattr(Version, operator, recorder(operator))
+
+        lower_a, lower_b = self.lower(("1.0", True)), self.lower(("2.0", True))
+        upper_a, upper_b = self.upper(("1.0", True)), self.upper(("2.0", True))
+        for bound in (lower_a, lower_b, upper_a, upper_b):
+            warm_key(bound)
+
+        assert lower_a < lower_b
+        assert not lower_a > lower_b
+        assert lower_a <= lower_b
+
+        assert upper_a < upper_b
+        assert not upper_a > upper_b
+
+        assert dispatched == []
 
 
 class TestEmptyMatchesUnsatisfiable:

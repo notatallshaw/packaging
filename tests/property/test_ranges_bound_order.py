@@ -4,10 +4,16 @@
 
 """Property tests for the ordering of ``LowerBound`` and ``UpperBound``.
 
-The oracle is the definition of a total order. Over a random pool of bounds,
-every pair is comparable; exactly one of ``a < b``, ``a == b`` and ``a > b``
-holds; ``<=`` and ``>=`` agree with that; and ``<`` is transitive. ``sorted``
-is checked too, since an incomparable pair makes it depend on input order.
+Two oracles. The first is the definition of a total order: over a random pool
+of bounds, every pair is comparable; exactly one of ``a < b``, ``a == b`` and
+``a > b`` holds; ``<=`` and ``>=`` agree with that; and ``<`` is transitive.
+``sorted`` is checked too, since an incomparable pair makes it depend on input
+order.
+
+The second is the same ordering written against the version operators alone,
+with ``>``, ``<=`` and ``>=`` derived from it the way ``functools.total_ordering``
+derives them. The classes order on the versions' cached comparison keys where
+both sides have one, and this holds the two spellings to the same answers.
 
 Bounds are drawn over the inner values the range engine builds: the unbounded
 end in both inclusivity spellings, a plain version, and a boundary of either
@@ -33,6 +39,8 @@ from packaging._ranges import (
 from .strategies import SETTINGS, pep440_versions
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from packaging.version import Version
 
 pytestmark = pytest.mark.property
@@ -101,6 +109,52 @@ def _assert_totally_ordered(pool: list[_BoundT]) -> None:
     assert sorted(reversed_pool) == ascending
 
 
+def _reference_lower_lt(left: LowerBound, right: LowerBound) -> bool:
+    """``LowerBound.__lt__`` written against the version operators alone."""
+    if left.version is None:
+        return right.version is not None
+    if right.version is None:
+        return False
+    if left.version != right.version:
+        return left.version < right.version
+    return left.inclusive and not right.inclusive
+
+
+def _reference_upper_lt(left: UpperBound, right: UpperBound) -> bool:
+    """``UpperBound.__lt__`` written against the version operators alone."""
+    if left.version is None:
+        return False
+    if right.version is None:
+        return True
+    if left.version != right.version:
+        return left.version < right.version
+    return not left.inclusive and right.inclusive
+
+
+def _assert_matches_reference(
+    pool: list[_BoundT], reference: Callable[[_BoundT, _BoundT], bool]
+) -> None:
+    """Assert every operator agrees with *reference* and what it derives.
+
+    The four operators are evaluated before *reference*, because *reference*
+    compares the two versions and so builds both their comparison keys. Two
+    passes: the first meets pairs whose keys the pool has not built yet, the
+    second meets every pair with both keys built.
+    """
+    for _ in range(2):
+        for a, b in itertools.product(pool, repeat=2):
+            answers = (a < b, a > b, a <= b, a >= b)
+            equal = a == b
+            expected_lt = reference(a, b)
+
+            assert answers == (
+                expected_lt,
+                not expected_lt and not equal,
+                expected_lt or equal,
+                not expected_lt,
+            )
+
+
 @given(pool=st.lists(_lower_bounds(), min_size=2, max_size=5))
 @SETTINGS
 def test_lower_bounds_are_totally_ordered(pool: list[LowerBound]) -> None:
@@ -111,3 +165,19 @@ def test_lower_bounds_are_totally_ordered(pool: list[LowerBound]) -> None:
 @SETTINGS
 def test_upper_bounds_are_totally_ordered(pool: list[UpperBound]) -> None:
     _assert_totally_ordered(pool)
+
+
+@given(pool=st.lists(_lower_bounds(), min_size=2, max_size=5))
+@SETTINGS
+def test_lower_bounds_order_as_the_version_operators_do(
+    pool: list[LowerBound],
+) -> None:
+    _assert_matches_reference(pool, _reference_lower_lt)
+
+
+@given(pool=st.lists(_upper_bounds(), min_size=2, max_size=5))
+@SETTINGS
+def test_upper_bounds_order_as_the_version_operators_do(
+    pool: list[UpperBound],
+) -> None:
+    _assert_matches_reference(pool, _reference_upper_lt)
