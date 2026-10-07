@@ -67,6 +67,44 @@ when building markers dynamically from separate conditions.
 
 .. versionadded:: 26.1
 
+Evaluating many markers against one environment
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+:meth:`Marker.evaluate` builds the environment it evaluates against on every
+call: it copies the detected environment, adds the keys the context defines,
+applies the caller's overrides, canonicalizes ``extra`` and repairs the
+``python_full_version`` a non-tagged build reports. Evaluating a whole
+dependency graph against one environment repeats that per marker.
+:func:`prepare_environment` does it once and returns a plain dict, which
+:meth:`Marker.evaluate_prepared` reads as given:
+
+.. doctest::
+
+    >>> from packaging.markers import Marker, prepare_environment
+    >>> environment = prepare_environment({"os_name": "posix"})
+    >>> markers = [Marker("os_name == 'posix'"), Marker("os_name == 'nt'")]
+    >>> [marker.evaluate_prepared(environment) for marker in markers]
+    [True, False]
+
+``marker.evaluate(environment, context)`` and
+``marker.evaluate_prepared(prepare_environment(environment, context))`` return
+the same answer for every input: :meth:`Marker.evaluate` runs those two steps.
+
+:meth:`Marker.evaluate_prepared` accepts any mapping and normalizes nothing. A
+caller may keep one prepared environment and write a key into it between
+evaluations, keeping the kind of value that key carries: a string for ``extra``,
+a set for ``extras`` and ``dependency_groups``. Pass an ``extra`` through
+:func:`packaging.utils.canonicalize_name` first, since a non-canonical name will
+not match the marker's own literal, which was canonicalized when it was parsed.
+
+A key the marker names and the mapping does not carry raises
+:class:`UndefinedEnvironmentName`, but a mapping :func:`prepare_environment` did
+not build can answer rather than raise: on a non-tagged build
+:func:`default_environment` reports a ``python_full_version`` ending in ``+``,
+so both ``>=`` and ``<`` against it are ``False``.
+
+.. versionadded:: 26.4
+
 
 Reference
 ---------

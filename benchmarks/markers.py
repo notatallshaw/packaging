@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+# asv runs this file against both commits it compares, so prepare_environment
+# is reached through the module rather than imported from it.
+import packaging.markers
 from packaging.markers import Marker
 
 from . import add_attributes
@@ -38,3 +41,13 @@ class TimeMarkerSuite:
     def time_str(self) -> None:
         for m in self.markers:
             str(m)
+
+    @add_attributes(pretty_name="Marker evaluate, environment prepared once")
+    def time_evaluate_prepared(self) -> None:
+        if hasattr(packaging.markers, "prepare_environment"):
+            environment = packaging.markers.prepare_environment(self.env)
+            for m in self.markers:
+                m.evaluate_prepared(environment)
+        else:
+            for m in self.markers:
+                m.evaluate(self.env)
