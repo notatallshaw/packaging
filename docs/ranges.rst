@@ -145,6 +145,10 @@ Like :meth:`VersionRange.intersection`, :meth:`VersionRange.union`, and
 :meth:`VersionRange.difference`, these predicates require both operands to share
 the same configured pre-release policy and raise :exc:`ValueError` otherwise.
 
+For containment and separation about the same pair,
+:meth:`VersionRange.relation` answers both at once; see
+`Relating two ranges`_.
+
 Because the operations refuse to mix policies, a range's version set is
 well-defined only under its own configured policy, and set relations stay sound
 only while that policy is held fixed. Reinterpreting a range, or a
@@ -178,6 +182,71 @@ while the second does not; they are not substitutable and compare unequal:
 
     >>> SpecifierSet("<1.0.post0.dev0").to_range() == SpecifierSet("<=1.0").to_range()
     False
+
+Relating two ranges
+-------------------
+
+Containment and separation are often asked about the same pair of ranges: a
+resolver holding one accumulated range per package asks both of every new
+constraint. Asking one at a time walks the same intervals twice.
+:meth:`VersionRange.relation` walks them once and returns a
+:class:`RangeRelation` carrying both answers, so ``a.relation(b).is_subset`` is
+``a.is_subset(b)`` and ``a.relation(b).is_disjoint`` is ``a.is_disjoint(b)``:
+
+.. doctest::
+
+    >>> from packaging.ranges import RangeRelation, VersionRange
+    >>> from packaging.specifiers import SpecifierSet
+    >>> a = SpecifierSet(">=1.0,<2.0").to_range()
+    >>> a.relation(SpecifierSet(">=0.5").to_range())
+    RangeRelation.SUBSET
+    >>> a.relation(SpecifierSet(">=1.5,<1.8").to_range())
+    RangeRelation.OVERLAPPING
+    >>> a.relation(SpecifierSet(">=3.0").to_range())
+    RangeRelation.DISJOINT
+    >>> a.relation(SpecifierSet(">=3.0").to_range()).is_disjoint
+    True
+
+There is no superset member: reverse the operands and read the containment
+answer, so ``b.relation(a).is_subset`` is ``a.is_superset(b)``.
+
+The empty range is a subset of every range and shares a member with none, so
+it answers :attr:`~RangeRelation.EMPTY` rather than
+:attr:`~RangeRelation.SUBSET`. The two are kept apart so a caller can tell
+"everything this range allows is still allowed" from "this range allows
+nothing at all":
+
+.. doctest::
+
+    >>> VersionRange.empty().relation(a)
+    RangeRelation.EMPTY
+    >>> VersionRange.empty().relation(a).is_subset
+    True
+
+Where ``===`` literals, the arbitrary-string flag, or a configured
+``prereleases=False`` policy are in play, the bounds no longer settle
+membership on their own: an admit literal or the flag adds members no bounds
+cover, and a reject literal or that policy withholds members the bounds
+describe.
+
+:meth:`VersionRange.relation` then answers through
+:meth:`VersionRange.is_subset` and :meth:`VersionRange.is_disjoint` and
+inherits their behaviour, including the one-way rule that a range admitting
+arbitrary strings at full bounds is contained only in another range that
+admits them:
+
+.. doctest::
+
+    >>> full = VersionRange.full()
+    >>> versions_only = VersionRange.full(admit_arbitrary=False)
+    >>> full.relation(versions_only)
+    RangeRelation.OVERLAPPING
+    >>> versions_only.relation(full)
+    RangeRelation.SUBSET
+
+Like the predicates and the set operations, :meth:`VersionRange.relation`
+raises :exc:`ValueError` when the two operands carry different configured
+pre-release policies.
 
 Recovering a specifier set
 --------------------------
