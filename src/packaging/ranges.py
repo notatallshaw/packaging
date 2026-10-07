@@ -84,8 +84,8 @@ def __dir__() -> list[str]:
 
 
 # Range algebra: intersection and the empty-interval test live in the engine
-# (``intersect_ranges`` / ``range_is_empty``); union and complement are only
-# needed here, so they live in this module.
+# (``intersect_ranges`` / ``range_is_empty``); union, complement and the two
+# relation predicates are only needed here, so they live in this module.
 
 
 def _union_ranges(
@@ -181,6 +181,69 @@ def _complement_ranges(ranges: Sequence[Interval]) -> list[Interval]:
         result.append((gap_lower, POS_INF))
 
     return result
+
+
+def _ranges_are_subset(
+    left: Sequence[Interval],
+    right: Sequence[Interval],
+) -> bool:
+    """Whether every version in *left* is also in *right*.
+
+    Both lists are canonical: sorted, disjoint, and separated by gaps that hold
+    at least one version. So a left interval has to be covered by one right
+    interval on its own, since two of them would leave the gap between them
+    uncovered.
+    """
+    right_index = 0
+    right_len = len(right)
+    for left_lower, left_upper in left:
+        # A right interval ending below this one cannot cover it, nor any
+        # later one, since left ascends.
+        while right_index < right_len and right[right_index][1] < left_upper:
+            right_index += 1
+
+        if right_index == right_len:
+            return False
+        if left_lower < right[right_index][0]:
+            return False
+
+    return True
+
+
+def _ranges_are_disjoint(
+    left: Sequence[Interval],
+    right: Sequence[Interval],
+) -> bool:
+    """Whether no version lies in both *left* and *right*.
+
+    The same two-pointer merge as :func:`~packaging._ranges.intersect_ranges`,
+    stopping at the first overlap instead of collecting them all.
+    """
+    left_index = right_index = 0
+    left_len = len(left)
+    right_len = len(right)
+    while left_index < left_len and right_index < right_len:
+        left_lower, left_upper = left[left_index]
+        right_lower, right_upper = right[right_index]
+
+        # Not max(): total_ordering derives ``__gt__`` from ``__lt__`` and
+        # ``__eq__``, so it can cost two calls where ``<`` costs one.
+        lower = right_lower
+        if right_lower < left_lower:
+            lower = left_lower
+
+        # Advance whichever side ends first; that end is also the overlap's.
+        if left_upper < right_upper:
+            upper = left_upper
+            left_index += 1
+        else:
+            upper = right_upper
+            right_index += 1
+
+        if not range_is_empty(lower, upper):
+            return False
+
+    return True
 
 
 def _canonical_floor(bounds: tuple[Interval, ...]) -> tuple[Interval, ...]:
@@ -1469,6 +1532,8 @@ class VersionRange:
         False
         >>> VersionRange.empty().is_subset(outer)
         True
+        >>> SpecifierSet(">=1.0,<2.0,!=1.5").to_range().is_subset(outer)
+        True
         """
         self._check_policy_compat(other)
 
@@ -1479,7 +1544,7 @@ class VersionRange:
 
         # Plain ranges: subset reduces to bounds containment, no algebra needed.
         if self._is_plain() and other._is_plain():
-            return not intersect_ranges(self._bounds, _complement_ranges(other._bounds))
+            return _ranges_are_subset(self._bounds, other._bounds)
 
         # difference (unlike intersection with the one-way complement) resolves
         # ``===`` literals against both operands, so it stays correct for them.
@@ -1515,12 +1580,15 @@ class VersionRange:
         True
         >>> a.is_disjoint(SpecifierSet(">=1.5,<2.5").to_range())
         False
+        >>> pin = SpecifierSet("==1.5").to_range()
+        >>> pin.is_disjoint(SpecifierSet("!=1.5").to_range())
+        True
         """
         self._check_policy_compat(other)
 
-        # Plain ranges: disjointness is an empty bounds intersection.
+        # Plain ranges: disjointness is decided by the bounds alone.
         if self._is_plain() and other._is_plain():
-            return not intersect_ranges(self._bounds, other._bounds)
+            return _ranges_are_disjoint(self._bounds, other._bounds)
         return self.intersection(other).is_empty
 
     def _same_releases(self, other: VersionRange) -> bool:
