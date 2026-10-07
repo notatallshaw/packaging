@@ -38,3 +38,13 @@ class TimeMarkerSuite:
     def time_str(self) -> None:
         for m in self.markers:
             str(m)
+
+    @add_attributes(pretty_name="Marker hash")
+    def time_hash(self) -> None:
+        for m in self.markers:
+            hash(m)
+
+    @add_attributes(pretty_name="Marker constructor and first str")
+    def time_first_str(self) -> None:
+        for text in self.marker_strs:
+            str(Marker(text))
