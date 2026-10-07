@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from unittest import mock
+
 import pytest
 
 from packaging._ranges import (
@@ -21,6 +23,24 @@ from packaging.version import InvalidVersion, Version
 
 def vr(spec: str, prereleases: bool | None = None) -> VersionRange:
     return SpecifierSet(spec, prereleases=prereleases).to_range()
+
+
+class TestDirectPredicates:
+    def test_plain_queries_avoid_intermediate_ranges(self) -> None:
+        inner = vr(">=1,<2,!=1.5")
+        outer = vr(">=0,<3")
+        distant = vr(">=4")
+
+        with (
+            mock.patch(
+                "packaging.ranges._complement_ranges", side_effect=AssertionError
+            ),
+            mock.patch("packaging.ranges.intersect_ranges", side_effect=AssertionError),
+        ):
+            assert inner.is_subset(outer)
+            assert not outer.is_subset(inner)
+            assert inner.is_disjoint(distant)
+            assert not inner.is_disjoint(outer)
 
 
 class TestConstruction:
@@ -824,6 +844,53 @@ class TestSetRelations:
         assert gapped.is_subset(whole)
         assert not whole.is_subset(gapped)
         assert not gapped.is_disjoint(whole)
+
+    def test_subset_needs_a_single_covering_interval(self) -> None:
+        # ``<1.5`` stops below 1.5's pre-releases and ``>1.5`` starts above its
+        # post-releases, so the two halves leave a hole the span covers.
+        span = vr(">=1.0,<2.0")
+        halves = vr(">=1.0,<1.5") | vr(">1.5,<2.0")
+        assert not span.is_subset(halves)
+        assert halves.is_subset(span)
+
+    def test_subset_skips_right_intervals_that_end_too_early(self) -> None:
+        span = vr(">=1.0,<2.0")
+        trailing = vr(">=0.1,<0.2") | vr(">=0.5,<0.6") | vr(">=0.9,<3.0")
+        assert span.is_subset(trailing)
+
+    def test_subset_false_when_the_right_side_runs_out(self) -> None:
+        # The first piece is covered and the second has nothing left to cover it.
+        gapped = vr(">=1.0,<2.0,!=1.5")
+        head = vr(">=1.0,<1.5")
+        assert not gapped.is_subset(head)
+
+    def test_subset_endpoint_inclusivity(self) -> None:
+        assert vr(">=1.0,<2.0").is_subset(vr(">=1.0,<=2.0"))
+        assert not vr(">=1.0,<=2.0").is_subset(vr(">=1.0,<2.0"))
+        assert not vr(">=1.0,<2.0").is_subset(vr(">1.0,<2.0"))
+
+        # Both bound comparisons land on the same version here, so only the
+        # inclusive flags separate the pin from the hole ``!=`` leaves for it.
+        pin = VersionRange.singleton("1.0+local")
+        assert not pin.is_subset(vr("!=1.0+local"))
+        assert pin.is_subset(vr("==1.0+local"))
+
+    def test_disjoint_advances_the_side_that_ends_first(self) -> None:
+        # The overlap is between the second interval of each side, so both
+        # pointers have to step past a non-overlapping pair to reach it.
+        a = vr(">=1.0,<2.0") | vr(">=5.0,<6.0")
+        b = vr(">=3.0,<4.0") | vr(">=5.5,<5.7")
+        assert not a.is_disjoint(b)
+        assert a.is_disjoint(vr(">=3.0,<4.0") | vr(">=7.0,<8.0"))
+
+    def test_disjoint_pin_inside_a_gap(self) -> None:
+        assert vr("!=1.5").is_disjoint(vr("==1.5"))
+        assert not vr("!=1.5").is_disjoint(vr("==1.6"))
+
+        # A local version leaves a gap whose bounds carry that exact version, so
+        # here only the inclusive flags keep the pin out of it.
+        assert vr("!=1.0+local").is_disjoint(vr("==1.0+local"))
+        assert not vr("!=1.0+local").is_disjoint(vr("==1.0+other"))
 
     def test_disjoint_nonempty_excludes_subset(self) -> None:
         a, b = vr(">=1.0,<2.0"), vr(">=3.0,<4.0")
