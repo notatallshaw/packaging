@@ -138,7 +138,6 @@ def test_complement_partitions(spec_set: SpecifierSet) -> None:
 @given(spec_set=specifier_sets())
 @SETTINGS
 def test_filter_nonemptiness_ignores_region(spec_set: SpecifierSet) -> None:
-    # The region changes which versions come out first, never whether any do.
     r = _to_range(spec_set)
     stripped = ~~r
     assert bool(list(r.filter(VERSION_POOL))) == bool(
@@ -247,20 +246,27 @@ def test_region_stays_within_bounds(
 def test_difference_equals_intersect_complement(
     a: SpecifierSet, b: SpecifierSet
 ) -> None:
-    """``a - b == a & ~b`` over pre-release-naming pairs.
-
-    ``rich_specifier_sets`` draws pre/post/dev/local/epoch RHS versions (no
-    ``===`` and no configured policy), so the two agree on bounds and region.
-    They would diverge over ``===`` literals and the arbitrary-string flag, which
-    this strategy does not draw; a configured-policy mismatch (where difference
-    raises like intersection) is covered by the unit tests in ``test_ranges.py``.
-    """
+    """Subtraction and intersection with the complement agree for version specifiers."""
     ra, rb = a.to_range(), b.to_range()
     intersect_complement = ra & ~rb
     assert ra - rb == intersect_complement
     assert list((ra - rb).filter(VERSION_POOL)) == list(
         intersect_complement.filter(VERSION_POOL)
     )
+
+
+@pytest.mark.parametrize("prereleases", [None, False, True])
+@given(a=rich_specifier_sets(), b=rich_specifier_sets())
+@SETTINGS
+def test_subset_matches_intersect_complement(
+    a: SpecifierSet, b: SpecifierSet, prereleases: bool | None
+) -> None:
+    first = SpecifierSet(str(a), prereleases=prereleases).to_range()
+    second = SpecifierSet(str(b), prereleases=prereleases).to_range()
+    expected = (first & ~second).is_empty
+
+    assert first.is_subset(second) is expected
+    assert second.is_superset(first) is expected
 
 
 @given(spec_set=specifier_sets())

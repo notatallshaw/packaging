@@ -2404,9 +2404,12 @@ class TestSpecifierSet:
             ("", ">=3.12", False),
         ],
     )
-    def test_is_subset(self, left: str, right: str, expected: bool) -> None:
-        spec = SpecifierSet(left)
-        other = SpecifierSet(right)
+    @pytest.mark.parametrize("prereleases", [None, False, True])
+    def test_is_subset(
+        self, left: str, right: str, expected: bool, prereleases: bool | None
+    ) -> None:
+        spec = SpecifierSet(left, prereleases=prereleases)
+        other = SpecifierSet(right, prereleases=prereleases)
 
         assert spec.is_subset(other) is expected
         assert spec.is_subset(other) == spec.to_range().is_subset(other.to_range())
@@ -2424,9 +2427,12 @@ class TestSpecifierSet:
             (">=3.12", "", False),
         ],
     )
-    def test_is_superset(self, left: str, right: str, expected: bool) -> None:
-        spec = SpecifierSet(left)
-        other = SpecifierSet(right)
+    @pytest.mark.parametrize("prereleases", [None, False, True])
+    def test_is_superset(
+        self, left: str, right: str, expected: bool, prereleases: bool | None
+    ) -> None:
+        spec = SpecifierSet(left, prereleases=prereleases)
+        other = SpecifierSet(right, prereleases=prereleases)
 
         assert spec.is_superset(other) is expected
         assert spec.is_superset(other) == spec.to_range().is_superset(other.to_range())
@@ -3604,9 +3610,7 @@ def test_specifierset_contains_reads_cached_bounds() -> None:
     assert ss.contains("2.0") is False
 
 
-# Every shape ``SpecifierSet`` can take: each operator, wildcards, ``===``,
-# epochs, pre/post/dev/local boundaries, multi-spec sets, and unsatisfiable
-# sets. Used to prove ``to_range()`` preserves membership and filtering.
+# Specifiers used to compare ``to_range()`` membership and filtering.
 _EQUIV_SPECS = [
     "",
     ">=1.0",

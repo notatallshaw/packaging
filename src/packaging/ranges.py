@@ -183,6 +183,48 @@ def _complement_ranges(ranges: Sequence[Interval]) -> list[Interval]:
     return result
 
 
+def _difference_ranges(
+    left: Sequence[Interval], right: Sequence[Interval]
+) -> tuple[Interval, ...]:
+    """Return the parts of sorted, non-overlapping left intervals outside right."""
+    if not left or right == FULL_RANGE:
+        return ()
+
+    result: list[Interval] = []
+    # Both lists are sorted, so earlier exclusions need not be revisited.
+    right_index = 0
+    for left_lower, upper in left:
+        lower = left_lower
+        while right_index < len(right):
+            right_lower, right_upper = right[right_index]
+            if range_is_empty(lower, right_upper):
+                # This exclusion ends before the remaining left interval.
+                right_index += 1
+                continue
+            if range_is_empty(right_lower, upper):
+                # No remaining exclusion can overlap this left interval.
+                if not range_is_empty(lower, upper):
+                    result.append((lower, upper))
+                break
+
+            if lower < right_lower:
+                # Keep the gap before the exclusion, flipping its endpoint.
+                gap_upper = UpperBound(right_lower.version, not right_lower.inclusive)
+                if not range_is_empty(lower, gap_upper):
+                    result.append((lower, gap_upper))
+            if right_upper >= upper:
+                # Reuse this exclusion if it also overlaps the next left interval.
+                break
+
+            lower = LowerBound(right_upper.version, not right_upper.inclusive)
+            right_index += 1
+        else:
+            # No exclusions remain; keep the rest of this interval.
+            if not range_is_empty(lower, upper):
+                result.append((lower, upper))
+    return tuple(result)
+
+
 def _canonical_floor(bounds: tuple[Interval, ...]) -> tuple[Interval, ...]:
     """Collapse the PEP 440 floor in a sorted interval list.
 
@@ -1340,11 +1382,7 @@ class VersionRange:
         if not other._bounds and not other._admit:
             return self
 
-        # Bound complement is two-way, so subtracting other's versions is an
-        # intersection with its gaps.
-        new_bounds = tuple(
-            intersect_ranges(self._bounds, _complement_ranges(other._bounds))
-        )
+        new_bounds = _difference_ranges(self._bounds, other._bounds)
 
         # Match ``self & ~other`` on the opt-in region: a complement carries no
         # opt-in, so only ``self``'s region survives. ``other`` acts as a
@@ -1479,7 +1517,7 @@ class VersionRange:
 
         # Plain ranges: subset reduces to bounds containment, no algebra needed.
         if self._is_plain() and other._is_plain():
-            return not intersect_ranges(self._bounds, _complement_ranges(other._bounds))
+            return not _difference_ranges(self._bounds, other._bounds)
 
         # difference (unlike intersection with the one-way complement) resolves
         # ``===`` literals against both operands, so it stays correct for them.
