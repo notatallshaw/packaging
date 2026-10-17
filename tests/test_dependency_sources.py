@@ -1,3 +1,7 @@
+# This file is dual licensed under the terms of the Apache License, Version
+# 2.0, and the BSD License. See the LICENSE file in the root of this repository
+# for complete details.
+
 from __future__ import annotations
 
 from collections import UserDict
@@ -62,7 +66,9 @@ def test_invalid_tables(table: object) -> None:
 @pytest.mark.parametrize("kind", ["path", "url", "index", "git", "hg", "bzr", "svn"])
 def test_source_kinds(kind: str) -> None:
     source = parse_dependency_sources({"Core_Lib": {kind: "https://example.org/core"}})
-    assert source["core-lib"][0] == DependencySource(kind, "https://example.org/core")
+    assert source["core-lib"][0] == DependencySource(
+        kind=kind, location="https://example.org/core"
+    )
 
 
 @pytest.mark.parametrize(
