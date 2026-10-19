@@ -13,6 +13,7 @@ from __future__ import annotations
 import abc
 import re
 import typing
+import warnings
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -501,6 +502,12 @@ class Specifier(BaseSpecifier):
 
     @prereleases.setter
     def prereleases(self, value: bool | None) -> None:
+        warnings.warn(
+            "Setting Specifier.prereleases is deprecated; pass prereleases to "
+            "the constructor or use __replace__().",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self._prereleases = value
 
     def __getstate__(self) -> tuple[tuple[str, str], bool | None]:
@@ -936,6 +943,12 @@ class SpecifierSet(BaseSpecifier):
 
     @prereleases.setter
     def prereleases(self, value: bool | None) -> None:
+        warnings.warn(
+            "Setting SpecifierSet.prereleases is deprecated; pass prereleases "
+            "to the constructor or use __replace__().",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self._prereleases = value
         self._is_unsatisfiable = None
 

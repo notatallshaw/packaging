@@ -81,8 +81,14 @@ versions that supports intersection, union, complement, and difference. See
 
 Both :class:`~packaging.specifiers.Specifier` and
 :class:`~packaging.specifiers.SpecifierSet` support ``__replace__``. A call that
-does not change an object may return that same instance. While ``prereleases``
-remains mutable, changing it through either reference also changes the other.
+does not change an object may return that same instance. Until assignment to
+``prereleases`` is removed, changing it through either reference changes both.
+
+.. deprecated:: 26.4
+
+    Assigning to ``prereleases`` is deprecated, though it still takes effect.
+    Pass it to the constructor or use ``__replace__(prereleases=...)`` to make
+    a changed object.
 
 The relation helpers take another :class:`~packaging.specifiers.SpecifierSet`
 and compare the versions the two sets accept, not the specifier objects
