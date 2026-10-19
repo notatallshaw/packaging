@@ -153,6 +153,11 @@ class Project:
 
 
 PROJECTS = {
+    "bandersnatch": Project(
+        "https://github.com/pypa/bandersnatch/archive/refs/tags/8.2.0.tar.gz",
+        install=("-e.", "-r", "requirements_s3.txt", "-r", "requirements_test.txt"),
+        pytest_args=("src/bandersnatch/tests/plugins", "-m", "not s3", "--rootdir=."),
+    ),
     "packaging_legacy": Project(
         "https://github.com/di/packaging_legacy/archive/refs/tags/23.0.post0.tar.gz",
         install=("-r", "tests/requirements.txt", "-e."),
