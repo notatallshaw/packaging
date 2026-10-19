@@ -153,6 +153,17 @@ class Project:
 
 
 PROJECTS = {
+    "robotpy_installer": Project(
+        "https://github.com/robotpy/robotpy-installer/archive/refs/tags/2027.0.0a9.tar.gz",
+        install=("-e.", "-r", "tests/requirements.txt"),
+        install_env={"SETUPTOOLS_SCM_PRETEND_VERSION": "2027.0.0a9"},
+        # test_download_basic fetches packages from the live index.
+        pytest_args=(
+            "tests",
+            "--rootdir=.",
+            "--deselect=tests/test_basic.py::test_download_basic",
+        ),
+    ),
     "packaging_legacy": Project(
         "https://github.com/di/packaging_legacy/archive/refs/tags/23.0.post0.tar.gz",
         install=("-r", "tests/requirements.txt", "-e."),
