@@ -62,7 +62,8 @@ class TestSpecifier:
         unchanged = original.__replace__()
         assert unchanged is original
         assert original.__replace__(prereleases=False) is original
-        unchanged.prereleases = True
+        with pytest.warns(DeprecationWarning, match="prereleases"):
+            unchanged.prereleases = True
         assert original.prereleases is True
 
     def test_replace_arbitrary_version(self) -> None:
@@ -696,7 +697,10 @@ class TestSpecifier:
         assert (version in spec) == initial_contains
         assert spec.contains(version) == initial_contains
 
-        spec.prereleases = set_prereleases
+        with pytest.warns(DeprecationWarning, match="prereleases") as recorded:
+            spec.prereleases = set_prereleases
+        assert len(recorded) == 1
+        assert recorded[0].filename == __file__
 
         assert (version in spec) == final_contains
         assert spec.contains(version) == final_contains
@@ -1324,7 +1328,8 @@ class TestSpecifierSet:
         unchanged = original.__replace__()
         assert unchanged is original
         assert original.__replace__(prereleases=False) is original
-        unchanged.prereleases = True
+        with pytest.warns(DeprecationWarning, match="prereleases"):
+            unchanged.prereleases = True
         assert original.prereleases is True
 
     def test_replace_validates(self) -> None:
@@ -1495,7 +1500,10 @@ class TestSpecifierSet:
         assert (version in spec) == initial_contains
         assert spec.contains(version) == initial_contains
 
-        spec.prereleases = set_prereleases
+        with pytest.warns(DeprecationWarning, match="prereleases") as recorded:
+            spec.prereleases = set_prereleases
+        assert len(recorded) == 1
+        assert recorded[0].filename == __file__
 
         assert (version in spec) == final_contains
         assert spec.contains(version) == final_contains
@@ -3023,7 +3031,8 @@ class TestIsUnsatisfiable:
     def test_cache_reset_on_prereleases_change(self) -> None:
         ss = SpecifierSet(">=1.0,<2.0")
         assert not ss.is_unsatisfiable()
-        ss.prereleases = True
+        with pytest.warns(DeprecationWarning, match="prereleases"):
+            ss.prereleases = True
         assert ss._is_unsatisfiable is None
 
     UNSATISFIABLE_NO_PRE: typing.ClassVar[list[str]] = [

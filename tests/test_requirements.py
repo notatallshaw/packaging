@@ -896,7 +896,8 @@ def test_pickle_requirement_preserves_prereleases(prereleases: bool | None) -> N
     # requirement string, so it must be preserved separately across a pickle
     # round trip.  See https://github.com/pypa/packaging/issues/1204.
     r = Requirement("foo>=1.0")
-    r.specifier.prereleases = prereleases
+    with pytest.warns(DeprecationWarning, match="prereleases"):
+        r.specifier.prereleases = prereleases
     loaded = pickle.loads(pickle.dumps(r))
     assert loaded.specifier._prereleases == prereleases
     assert loaded == r
