@@ -17,8 +17,9 @@ class TimeSpecSuite:
     COMPLEX_SPEC = ">=3.8,!=3.9.*,!=3.10.0,!=3.10.1,~=3.10.2,<3.14,!=3.11.0,!=3.12.0"
     COMPATIBLE_SPEC = "~=3.10"
 
-    def setup(self, *_parameters: object) -> None:
-        """Build shared inputs; benchmarks may apply extra parameters."""
+    def setup(self, *parameters: bool | None) -> None:
+        """Build inputs with the relation benchmarks' prerelease policy."""
+        prereleases = parameters[0] if parameters else None
         with (DIR / "specs_sample.txt").open() as f:
             self.spec_strs = [s.strip() for s in f.readlines()]
 
@@ -42,19 +43,17 @@ class TimeSpecSuite:
         self._cold_complex = SpecifierSet(self.COMPLEX_SPEC)
 
         # Build warm specifiers
-        self._warm_specs = [SpecifierSet(s) for s in self.spec_strs]
+        self._warm_specs = [
+            SpecifierSet(s, prereleases=prereleases) for s in self.spec_strs
+        ]
         self._warm_simple = SpecifierSet(self.SIMPLE_SPEC)
-        self._warm_complex = SpecifierSet(self.COMPLEX_SPEC)
+        self._warm_complex = SpecifierSet(self.COMPLEX_SPEC, prereleases=prereleases)
         self._warm_compatible = SpecifierSet(self.COMPATIBLE_SPEC)
-        for s in self._warm_specs:
-            for sp in s._specs:
-                sp.contains(self.single_version)
-        for sp in self._warm_simple._specs:
-            sp.contains(self.single_version)
-        for sp in self._warm_complex._specs:
-            sp.contains(self.complex_versions[0])
-        for sp in self._warm_compatible._specs:
-            sp.contains(self.complex_versions[0])
+        for spec in self._warm_specs:
+            spec.contains(self.single_version)
+        self._warm_simple.contains(self.single_version)
+        self._warm_complex.contains(self.complex_versions[0])
+        self._warm_compatible.contains(self.complex_versions[0])
 
         self._warm_spec_groups = [s._specs for s in self._warm_specs]
         self._warm_specifiers = [sp for group in self._warm_spec_groups for sp in group]
@@ -66,46 +65,41 @@ class TimeSpecSuite:
         )
         self._dedup_set = SpecifierSet()
 
-    def _make_cold(self, spec: SpecifierSet) -> None:
-        if hasattr(spec, "_canonicalized"):
-            spec._canonicalized = False
-        if hasattr(spec, "_resolved_ops"):
-            spec._resolved_ops = None
-        if hasattr(spec, "_ranges"):
-            spec._ranges = None
-        if hasattr(spec, "_is_unsatisfiable"):
-            spec._is_unsatisfiable = None
-        for sp in spec._specs:
-            sp._spec_version = None
-            if hasattr(sp, "_wildcard_split"):
-                sp._wildcard_split = None
-            if hasattr(sp, "_ranges"):
-                sp._ranges = None
+        if parameters:
+            for spec in self._warm_specs:
+                spec.is_subset(self._warm_complex)
 
     @add_attributes(pretty_name="SpecifierSet constructor")
     def time_constructor(self) -> None:
         for s in self.spec_strs:
             SpecifierSet(s)
 
-    @add_attributes(pretty_name="SpecifierSet is_unsatisfiable (complex, cold)")
+    @add_attributes(
+        pretty_name="SpecifierSet is_unsatisfiable (complex, cold)", number=1
+    )
     def time_is_unsatisfiable_complex_cold(self) -> None:
-        self._make_cold(self._cold_complex)
         self._cold_complex.is_unsatisfiable()
 
     @add_attributes(
-        pretty_name="SpecifierSet constructor and is_subset",
+        pretty_name="SpecifierSet is_subset (warm)",
         params=[None, False, True],
         param_names=["prereleases"],
     )
-    def time_constructor_and_subset(self, prereleases: bool | None) -> None:
-        other = SpecifierSet(self.COMPLEX_SPEC, prereleases=prereleases)
-        for text in self.spec_strs:
-            SpecifierSet(text, prereleases=prereleases).is_subset(other)
+    def time_is_subset(self, _prereleases: bool | None) -> None:
+        for spec in self._warm_specs:
+            spec.is_subset(self._warm_complex)
 
-    @add_attributes(pretty_name="SpecifierSet contains (cold)")
+    @add_attributes(
+        pretty_name="SpecifierSet is_disjoint (warm)",
+        params=[None, False, True],
+        param_names=["prereleases"],
+    )
+    def time_is_disjoint(self, _prereleases: bool | None) -> None:
+        for spec in self._warm_specs:
+            spec.is_disjoint(self._warm_complex)
+
+    @add_attributes(pretty_name="SpecifierSet contains (cold)", number=1)
     def time_contains_cold(self) -> None:
-        for spec in self._cold_specs:
-            self._make_cold(spec)
         for spec in self._cold_specs:
             spec.contains(self.single_version)
 
@@ -119,18 +113,16 @@ class TimeSpecSuite:
         for v in self.complex_versions:
             self._warm_complex.contains(v)
 
-    @add_attributes(pretty_name="SpecifierSet filter (simple, cold)")
+    @add_attributes(pretty_name="SpecifierSet filter (simple, cold)", number=1)
     def time_filter_simple_cold(self) -> None:
-        self._make_cold(self._cold_simple)
         list(self._cold_simple.filter(self.simple_versions))
 
     @add_attributes(pretty_name="SpecifierSet filter (simple, warm)")
     def time_filter_simple_warm(self) -> None:
         list(self._warm_simple.filter(self.simple_versions))
 
-    @add_attributes(pretty_name="SpecifierSet filter (complex, cold)")
+    @add_attributes(pretty_name="SpecifierSet filter (complex, cold)", number=1)
     def time_filter_complex_cold(self) -> None:
-        self._make_cold(self._cold_complex)
         list(self._cold_complex.filter(self.complex_versions))
 
     @add_attributes(pretty_name="SpecifierSet filter (complex, warm)")
