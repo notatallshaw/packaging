@@ -25,8 +25,8 @@ class TimeVersionSuite:
         self.valid_versions = [v for v in self.versions if valid_version(v)]
         self.version_objects_cold = [Version(v) for v in self.valid_versions]
         self.version_objects_warm = [Version(v) for v in self.valid_versions]
-        for v in self.version_objects_warm:
-            _ = v._key
+        for version in self.version_objects_warm:
+            hash(version)
 
     @add_attributes(pretty_name="Version constructor")
     def time_constructor(self) -> None:
@@ -36,10 +36,10 @@ class TimeVersionSuite:
             except InvalidVersion:  # noqa: PERF203
                 pass
 
-    @add_attributes(pretty_name="Version hash")
+    @add_attributes(pretty_name="Version hash (cold cache)", number=1)
     def time_hash(self) -> None:
-        for v in self.valid_versions:
-            hash(Version(v))
+        for version in self.version_objects_cold:
+            hash(version)
 
     @add_attributes(pretty_name="Version hash (warm cache)")
     def time_hash_warm(self) -> None:
@@ -48,16 +48,12 @@ class TimeVersionSuite:
 
     @add_attributes(pretty_name="Version __str__")
     def time_str(self) -> None:
-        for version in self.valid_versions:
-            str(Version(version))
+        for version in self.version_objects_cold:
+            str(version)
 
-    @add_attributes(pretty_name="Version sorting (cold cache)")
+    @add_attributes(pretty_name="Version sorting (cold cache)", number=1)
     def time_sort_cold(self) -> None:
         """Sorting when _key needs to be calculated during comparison."""
-        for v in self.version_objects_cold:
-            v._key_cache = None
-            if hasattr(v, "_hash_cache"):
-                v._hash_cache = None
         sorted(self.version_objects_cold)
 
     @add_attributes(pretty_name="Version sorting (warm cache)")

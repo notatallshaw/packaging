@@ -10,7 +10,7 @@ class TimeResolverSuite:
     rounds = 4
 
     def setup(self) -> None:
-        self.valid_versions = [
+        versions = [
             "1.0.0",
             "1.0.0.post1",
             "1.0.1",
@@ -24,7 +24,7 @@ class TimeResolverSuite:
             "2.1.1",
             "3.0.0",
         ]
-        self.spec_strs = [
+        specifiers = [
             ">=1.0.0,<2.0.0",
             ">=1.2.0,!=1.2.5,<3.0.0",
             ">=2.0.0,<3.0.0",
@@ -37,12 +37,12 @@ class TimeResolverSuite:
             "==1.0.0",
         ]
 
+        self.versions = [Version(version) for version in versions]
+        self.specifiers = [SpecifierSet(specifier) for specifier in specifiers]
+
     @add_attributes(pretty_name="Resolver-style loop")
     def time_resolver_loop(self) -> None:
-        versions = [Version(v) for v in self.valid_versions]
-        specs = [SpecifierSet(s) for s in self.spec_strs]
-
-        for spec in specs:
-            candidates = [v for v in versions if v in spec]
+        for spec in self.specifiers:
+            candidates = [v for v in self.versions if v in spec]
             if candidates:
                 max(candidates)
