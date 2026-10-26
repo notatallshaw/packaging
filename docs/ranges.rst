@@ -179,6 +179,22 @@ while the second does not; they are not substitutable and compare unequal:
     >>> SpecifierSet("<1.0.post0.dev0").to_range() == SpecifierSet("<=1.0").to_range()
     False
 
+Snapping onto released versions
+-------------------------------
+
+:meth:`VersionRange.snap_bounds` moves finite endpoints inward onto supplied
+versions, preserving which of those versions match. Unbounded ends and intervals
+containing no supplied version stay unchanged. The result is a subset of the
+original range.
+
+.. doctest::
+
+    >>> source = SpecifierSet(">=1.0,<2.0").to_range()
+    >>> source.snap_bounds(["1.2", "1.5", "1.8", "2.1"])
+    <VersionRange '[1.2, 1.8]'>
+
+.. versionadded:: 26.4
+
 Recovering a specifier set
 --------------------------
 

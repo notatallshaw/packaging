@@ -625,3 +625,58 @@ def test_upper_bounds_order_as_the_version_operators_do(
     pool: list[UpperBound],
 ) -> None:
     _assert_matches_reference(pool, _reference_upper_lt)
+
+
+@st.composite
+def algebra_ranges(draw: st.DrawFn) -> VersionRange:
+    """Combine public factories to reach local endpoints and interval gaps."""
+    atoms = st.one_of(
+        rich_specifier_sets(include_arbitrary=True).map(lambda value: value.to_range()),
+        pep440_versions().map(VersionRange.singleton),
+    )
+    result = draw(atoms)
+    for _ in range(draw(st.integers(min_value=0, max_value=2))):
+        other = draw(atoms)
+        operation = draw(st.sampled_from(["intersection", "union", "difference"]))
+        if operation == "intersection":
+            result = result & other
+        elif operation == "union":
+            result = result | other
+        else:
+            result = result - other
+    return result
+
+
+snappable_ranges = st.one_of(
+    rich_specifier_sets(include_arbitrary=True, vary_prereleases=True).map(
+        lambda value: value.to_range()
+    ),
+    algebra_ranges(),
+)
+
+
+@given(
+    source=snappable_ranges,
+    versions=st.lists(pep440_versions(), max_size=10),
+)
+@SETTINGS
+def test_snap_bounds_preserves_listed_membership(
+    source: VersionRange, versions: list[Version]
+) -> None:
+    result = source.snap_bounds(versions)
+    assert result.is_subset(source)
+    assert [version for version in versions if version in result] == [
+        version for version in versions if version in source
+    ]
+
+
+@given(
+    source=snappable_ranges,
+    versions=st.lists(pep440_versions(), max_size=10),
+)
+@SETTINGS
+def test_snap_bounds_is_idempotent(
+    source: VersionRange, versions: list[Version]
+) -> None:
+    result = source.snap_bounds(versions)
+    assert result.snap_bounds(versions) == result
