@@ -1,0 +1,319 @@
+Public version examples retained from packaging commit 41bc157.
+
+normalize_pre
+=============
+
+Normalize the pre-release segment of a version string.
+
+Returns a lowercase version of the string if not a known pre-release
+identifier.
+
+>>> normalize_pre('alpha')
+'a'
+>>> normalize_pre('BETA')
+'b'
+>>> normalize_pre('rc')
+'rc'
+
+:param letter:
+
+.. versionadded:: 26.1
+
+parse
+=====
+
+Parse the given version string.
+
+This is identical to the :class:`Version` constructor.
+
+>>> parse('1.0.dev1')
+<Version('1.0.dev1')>
+
+:param version: The version string to parse.
+:raises InvalidVersion: When the version string is not a valid version.
+
+InvalidVersion
+==============
+
+Raised when a version string is not a valid version.
+
+>>> Version("invalid")
+Traceback (most recent call last):
+    ...
+packaging.version.InvalidVersion: Invalid version: 'invalid'
+
+Version examples
+================
+
+This class abstracts handling of a project's versions.
+
+A :class:`Version` instance is comparison aware and can be compared and
+sorted using the standard Python interfaces.
+
+>>> v1 = Version("1.0a5")
+>>> v2 = Version("1.0")
+>>> v1
+<Version('1.0a5')>
+>>> v2
+<Version('1.0')>
+>>> v1 < v2
+True
+>>> v1 == v2
+False
+>>> v1 > v2
+False
+>>> v1 >= v2
+False
+>>> v1 <= v2
+True
+
+:class:`Version` is immutable; use :meth:`__replace__` to change
+part of a version.
+
+Instances are safe to serialize with :mod:`pickle`. They use a stable
+format so the same pickle can be loaded in future packaging releases.
+
+.. versionchanged:: 26.2
+
+    Added a stable pickle format. Pickles created with packaging 26.2+ can
+    be unpickled with future releases.  Backward compatibility with pickles
+    from packaging < 26.2 is supported but may be removed in a future
+    release.
+
+Version.from_parts
+==================
+
+Return a new version composed of the various parts.
+
+This allows you to build a version without going though a string and
+running a regular expression. It normalizes pre-release strings. The
+``release=`` keyword argument is required.
+
+>>> Version.from_parts(release=(1,2,3))
+<Version('1.2.3')>
+>>> Version.from_parts(release=(0,1,0), pre=("b", 1))
+<Version('0.1.0b1')>
+
+:param epoch:
+:param release: This version tuple is required
+
+.. versionadded:: 26.1
+
+Version.__replace__
+===================
+
+__replace__(*, epoch=..., release=..., pre=..., post=..., dev=..., local=...)
+
+Return a new version with parts replaced.
+
+This returns a new version (unless no parts were changed). The
+pre-release is normalized. Setting a value to ``None`` clears it.
+
+>>> v = Version("1.2.3")
+>>> v.__replace__(pre=("a", 1))
+<Version('1.2.3a1')>
+
+:param int | None epoch:
+:param tuple[int, ...] | None release:
+:param tuple[str, int] | None pre:
+:param int | None post:
+:param int | None dev:
+:param str | None local:
+
+.. versionadded:: 26.0
+.. versionchanged:: 26.1
+
+   The pre-release portion is now normalized.
+
+.. versionchanged:: 26.4
+
+   Unknown keyword arguments now raise :exc:`TypeError` instead of
+   being silently ignored.
+
+Version.__repr__
+================
+
+A representation of the Version that shows all internal state.
+
+>>> Version('1.0.0')
+<Version('1.0.0')>
+
+Version.__str__
+===============
+
+A string representation of the version that can be round-tripped.
+
+>>> str(Version("1.0a5"))
+'1.0a5'
+
+Version.epoch
+=============
+
+The epoch of the version.
+
+>>> Version("2.0.0").epoch
+0
+>>> Version("1!2.0.0").epoch
+1
+
+Version.release
+===============
+
+The components of the "release" segment of the version.
+
+>>> Version("1.2.3").release
+(1, 2, 3)
+>>> Version("2.0.0").release
+(2, 0, 0)
+>>> Version("1!2.0.0.post0").release
+(2, 0, 0)
+
+Includes trailing zeroes but not the epoch or any pre-release / development /
+post-release suffixes.
+
+Version.pre
+===========
+
+The pre-release segment of the version.
+
+>>> print(Version("1.2.3").pre)
+None
+>>> Version("1.2.3a1").pre
+('a', 1)
+>>> Version("1.2.3b1").pre
+('b', 1)
+>>> Version("1.2.3rc1").pre
+('rc', 1)
+
+Version.post
+============
+
+The post-release number of the version.
+
+>>> print(Version("1.2.3").post)
+None
+>>> Version("1.2.3.post1").post
+1
+
+Version.dev
+===========
+
+The development number of the version.
+
+>>> print(Version("1.2.3").dev)
+None
+>>> Version("1.2.3.dev1").dev
+1
+
+Version.local
+=============
+
+The local version segment of the version.
+
+>>> print(Version("1.2.3").local)
+None
+>>> Version("1.2.3+abc").local
+'abc'
+
+Version.public
+==============
+
+The public portion of the version.
+
+This returns a string. If you want a :class:`Version` again and care
+about performance, use ``v.__replace__(local=None)`` instead.
+
+>>> Version("1.2.3").public
+'1.2.3'
+>>> Version("1.2.3+abc").public
+'1.2.3'
+>>> Version("1!1.2.3dev1+abc").public
+'1!1.2.3.dev1'
+
+Version.base_version
+====================
+
+The "base version" of the version.
+
+This returns a string. If you want a :class:`Version` again and care
+about performance, use
+``v.__replace__(pre=None, post=None, dev=None, local=None)`` instead.
+
+>>> Version("1.2.3").base_version
+'1.2.3'
+>>> Version("1.2.3+abc").base_version
+'1.2.3'
+>>> Version("1!1.2.3dev1+abc").base_version
+'1!1.2.3'
+
+The "base version" is the public version of the project without any pre or post
+release markers.
+
+Version.is_prerelease
+=====================
+
+Whether this version is a pre-release.
+
+>>> Version("1.2.3").is_prerelease
+False
+>>> Version("1.2.3a1").is_prerelease
+True
+>>> Version("1.2.3b1").is_prerelease
+True
+>>> Version("1.2.3rc1").is_prerelease
+True
+>>> Version("1.2.3dev1").is_prerelease
+True
+
+Version.is_postrelease
+======================
+
+Whether this version is a post-release.
+
+>>> Version("1.2.3").is_postrelease
+False
+>>> Version("1.2.3.post1").is_postrelease
+True
+
+Version.is_devrelease
+=====================
+
+Whether this version is a development release.
+
+>>> Version("1.2.3").is_devrelease
+False
+>>> Version("1.2.3.dev1").is_devrelease
+True
+
+Version.major
+=============
+
+The first item of :attr:`release` or ``0`` if unavailable.
+
+>>> Version("1.2.3").major
+1
+
+.. versionadded:: 20.0
+Version.minor
+=============
+
+The second item of :attr:`release` or ``0`` if unavailable.
+
+>>> Version("1.2.3").minor
+2
+>>> Version("1").minor
+0
+
+.. versionadded:: 20.0
+
+Version.micro
+=============
+
+The third item of :attr:`release` or ``0`` if unavailable.
+
+>>> Version("1.2.3").micro
+3
+>>> Version("1").micro
+0
+
+.. versionadded:: 20.0

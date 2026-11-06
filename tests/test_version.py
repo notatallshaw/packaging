@@ -9,6 +9,7 @@ import operator
 import pickle
 import sys
 import typing
+from copy import replace
 
 import pretend
 import pytest
@@ -17,23 +18,12 @@ from packaging._structures import Infinity, NegativeInfinity
 from packaging.version import (
     InvalidVersion,
     Version,
-    _BaseVersion,
     _TrimmedRelease,
     parse,
 )
 
 if typing.TYPE_CHECKING:
     from collections.abc import Callable
-
-
-if sys.version_info >= (3, 13):
-    from copy import replace
-else:
-    T = typing.TypeVar("T")
-
-    def replace(item: T, **kwargs: object) -> T:
-        new = item.__replace__(**kwargs)  # type: ignore[attr-defined]
-        return typing.cast("T", new)
 
 
 def test_parse() -> None:
@@ -142,27 +132,6 @@ VERSIONS = [
     "1!1.2.r32+123456",
     "1!1.2.rev33+123456",
 ]
-
-
-# Simple _BaseVersion subclass for testing comparison with non-Version types
-class SimpleVersion(_BaseVersion):
-    """A simple _BaseVersion subclass for testing cross-type comparisons."""
-
-    def __init__(self, key: typing.Any) -> None:  # noqa: ANN401
-        # If key is a string, parse it as a version to create a compatible key
-        if isinstance(key, str):
-            parsed = Version(key)
-            self._key_tuple = parsed._key
-        else:
-            self._key_tuple = key
-
-    @property
-    def _key(self) -> typing.Any:  # noqa: ANN401
-        return self._key_tuple
-
-    @_key.setter
-    def _key(self, value: typing.Any) -> None:  # noqa: ANN401
-        self._key_tuple = value
 
 
 class TestVersion:
@@ -904,25 +873,6 @@ class TestVersion:
 
         assert getattr(operator, op)(Version("1"), other) is expected
 
-    @pytest.mark.parametrize(
-        "op", ["__lt__", "__le__", "__eq__", "__ge__", "__gt__", "__ne__"]
-    )
-    def test_base_version_notimplemented_with_non_base_version(self, op: str) -> None:
-        """Test _BaseVersion returns NotImplemented with non-_BaseVersion."""
-        v = SimpleVersion("1.0")
-        assert getattr(v, op)(1) is NotImplemented
-
-    def test_base_version_hash(self) -> None:
-        """Test that _BaseVersion hash works"""
-        v = SimpleVersion("1.0")
-        assert isinstance(hash(v), int)
-
-    def test_base_version_ne_with_base_version(self) -> None:
-        """Test _BaseVersion.__ne__ with another _BaseVersion."""
-        v1 = SimpleVersion("1.0")
-        v2 = SimpleVersion("2.0")
-        assert v1 != v2
-
     def test_gt_with_cached_other(self) -> None:
         """__gt__ fast path when other already has a cached key."""
         other = Version("1.0")
@@ -930,24 +880,6 @@ class TestVersion:
         _ = other < Version("2.0")
         # Fresh version on the left, cached one on the right.
         assert Version("2.0") > other
-
-    def test_version_compare_with_base_version_subclass(self) -> None:
-        """Test Version comparison with another _BaseVersion subclass"""
-        v1 = Version("1.0")
-        v2 = SimpleVersion("1.0")
-
-        # All comparisons should work with compatible keys
-        assert v1 == v2
-        assert v1 <= v2
-        assert v1 >= v2
-        assert v1 == v2
-        assert not (v1 < v2)
-        assert not (v1 > v2)
-
-        # Test with different versions to exercise != path
-        v3 = Version("1.0")
-        v4 = SimpleVersion("2.0")
-        assert v3 != v4
 
     def test_version_ne_with_uncached_keys(self) -> None:
         """Test Version.__ne__ populates cache when comparing with another Version"""

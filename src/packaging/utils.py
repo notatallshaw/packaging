@@ -8,7 +8,7 @@ import re
 from typing import NewType, cast
 
 from .tags import InvalidTag, Tag, UnsortedTagsError, parse_tag
-from .version import InvalidVersion, Version, _TrimmedRelease
+from .version import InvalidVersion, Version
 
 __all__ = [
     "BuildTag",
@@ -194,7 +194,14 @@ def canonicalize_version(
             version = Version(version)
         except InvalidVersion:
             return str(version)
-    return str(_TrimmedRelease(version) if strip_trailing_zero else version)
+    if strip_trailing_zero:
+        release = version.release
+        end = len(release)
+        while end > 1 and release[end - 1] == 0:
+            end -= 1
+        if end != len(release):
+            version = version.__replace__(release=release[:end])
+    return str(version)
 
 
 def parse_wheel_filename(

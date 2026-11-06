@@ -30,11 +30,11 @@ class TimeSpecSuite:
             for minor in range(8, 15)
             for patch in range(15)
         ]
-        self.single_version._key  # noqa: B018
+        hash(self.single_version)
         for v in self.simple_versions:
-            v._key  # noqa: B018
+            hash(v)
         for v in self.complex_versions:
-            v._key  # noqa: B018
+            hash(v)
 
         # Build cold specifiers
         self._cold_specs = [SpecifierSet(s) for s in self.spec_strs]

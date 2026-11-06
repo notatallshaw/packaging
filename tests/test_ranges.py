@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import operator
+import sys
 from typing import TYPE_CHECKING
 
 import pytest
@@ -2297,21 +2298,22 @@ class TestBoundOrdering:
 
         assert compare(a, b) is compare(expected, 0)
 
-    def test_cached_keys_avoid_version_comparisons(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        def refuse_comparison(_self: Version, _other: object) -> bool:
-            raise AssertionError("cached bound dispatched a version comparison")
+    def test_bounds_use_public_version_operations(self) -> None:
+        class PublicVersion(Version):
+            """Reject private attributes read directly by range consumers."""
 
-        lower_a = LowerBound(Version("1.0"), True)
-        lower_b = LowerBound(Version("2.0"), True)
-        upper_a = UpperBound(Version("1.0"), True)
-        upper_b = UpperBound(Version("2.0"), True)
+            def __getattribute__(self, name: str) -> object:
+                caller = sys._getframe(1).f_globals["__name__"]
+                if caller == "packaging._ranges" and name in {"_key", "_key_cache"}:
+                    raise AssertionError("bound accessed a private version cache")
+                return super().__getattribute__(name)
+
+        lower_a = LowerBound(PublicVersion("1.0"), True)
+        lower_b = LowerBound(PublicVersion("2.0"), True)
+        upper_a = UpperBound(PublicVersion("1.0"), True)
+        upper_b = UpperBound(PublicVersion("2.0"), True)
         for bound in (lower_a, lower_b, upper_a, upper_b):
             warm_key(bound)
-
-        for name in ("__eq__", "__ne__", "__lt__"):
-            monkeypatch.setattr(Version, name, refuse_comparison)
 
         assert lower_a < lower_b
         assert not lower_a > lower_b
@@ -2319,6 +2321,16 @@ class TestBoundOrdering:
 
         assert upper_a < upper_b
         assert not upper_a > upper_b
+
+        after_locals = BoundaryVersion(PublicVersion("1.0"), BoundaryKind.AFTER_LOCALS)
+        after_posts = BoundaryVersion(
+            PublicVersion("1.0.post1"), BoundaryKind.AFTER_POSTS
+        )
+        same_posts = BoundaryVersion(PublicVersion("1.0"), BoundaryKind.AFTER_POSTS)
+        assert after_locals < after_posts
+        assert after_posts > after_locals
+        assert after_posts == same_posts
+        assert hash(after_posts) == hash(same_posts)
 
 
 class TestEmptyMatchesUnsatisfiable:

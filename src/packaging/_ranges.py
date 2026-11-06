@@ -18,10 +18,7 @@ from .version import InvalidVersion, Version
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator, Sequence
 
-    # Total-order key for comparing two boundaries (boundary-vs-boundary only).
-    # The post slot may be ``_BOUNDARY_INF`` for an AFTER_POSTS boundary.
-    _BoundaryOrderSuffix = tuple[int, int, int, int | float, int, int]
-    _BoundaryOrderKey = tuple[int, tuple[int, ...], _BoundaryOrderSuffix, float]
+    _BoundaryOrderKey = tuple[Version, bool, Version]
 
 __all__ = [
     "FULL_RANGE",
@@ -46,10 +43,6 @@ MIN_VERSION: Final[Version] = Version("0.dev0")
 #: The smallest non-pre-release version, i.e. the nearest non-pre-release at or
 #: above the ``-inf`` floor.
 MIN_RELEASE: Final[Version] = Version("0")
-
-#: Sorts above any real post number and any local label, so a boundary can be
-#: ordered above the version family it covers when two boundaries are compared.
-_BOUNDARY_INF: Final[float] = float("inf")
 
 
 class BoundaryKind(enum.Enum):
@@ -76,6 +69,7 @@ class BoundaryVersion:
     __slots__ = (
         "_cached_dev",
         "_cached_epoch",
+        "_cached_order_key",
         "_cached_post",
         "_cached_pre",
         "_cached_trimmed_release",
@@ -83,12 +77,10 @@ class BoundaryVersion:
         "version",
     )
 
-    # Synthetic boundaries must use version operators rather than cached keys.
-    _key_cache: None = None
-
     def __init__(self, version: Version, kind: BoundaryKind) -> None:
         self.version = version
         self.kind = kind
+        self._cached_order_key: _BoundaryOrderKey | None = None
         self._cached_trimmed_release = trim_release(version.release)
         self._cached_epoch = version.epoch
         self._cached_pre = version.pre
@@ -121,25 +113,20 @@ class BoundaryVersion:
         return other.dev == self._cached_dev or other.post is not None
 
     def _order_key(self) -> _BoundaryOrderKey:
-        """Sort key placing this boundary just above the versions it covers.
-
-        It extends ``V``'s comparison key ``(epoch, release, suffix)`` with
-        a trailing ``_BOUNDARY_INF`` local component, so the key sorts after
-        ``V`` and every ``V+local`` (whose keys carry a real, finite local
-        segment). ``suffix`` is the 6-int comparison suffix
-        ``(pre_rank, pre_n, post_rank, post_n, dev_rank, dev_n)``.
-
-        For an AFTER_POSTS boundary the suffix is replaced with one whose
-        post number is ``_BOUNDARY_INF``, so the key also sorts after every
-        ``V.postN``. An AFTER_LOCALS boundary uses ``V``'s suffix unchanged.
-        """
-        version_key = self.version._key
-        suffix: _BoundaryOrderSuffix = version_key[2]
-
-        if self.kind == BoundaryKind.AFTER_POSTS:
-            suffix = (suffix[0], suffix[1], 1, _BOUNDARY_INF, 1, 0)
-
-        return version_key[0], version_key[1], suffix, _BOUNDARY_INF
+        """Order synthetic boundaries through public version comparisons."""
+        if self._cached_order_key is None:
+            version = self.version
+            dev_only = (
+                version.pre is None and version.post is None and version.dev is not None
+            )
+            prefix = version.__replace__(
+                post=None, dev=0 if dev_only else None, local=None
+            )
+            after_posts = self.kind == BoundaryKind.AFTER_POSTS
+            # A post-family boundary follows every post number in its prefix.
+            within = prefix if after_posts else version.__replace__(local=None)
+            self._cached_order_key = prefix, after_posts, within
+        return self._cached_order_key
 
     def __eq__(self, other: object) -> bool:
         # Key off the order key so equality matches the ``<`` / ``>`` order:
@@ -228,14 +215,8 @@ class LowerBound:
         if other.version is None:
             return False
 
-        # Use cached keys when both exist; cold versions and boundaries use operators.
-        self_key = self.version._key_cache
-        other_key = other.version._key_cache
-        if self_key is None or other_key is None:
-            if self.version != other.version:
-                return self.version < other.version
-        elif self_key != other_key:
-            return self_key < other_key
+        if self.version != other.version:
+            return self.version < other.version
 
         # [v < (v: inclusive starts earlier.
         return self.inclusive and not other.inclusive
@@ -249,13 +230,8 @@ class LowerBound:
         if other.version is None:
             return True
 
-        self_key = self.version._key_cache
-        other_key = other.version._key_cache
-        if self_key is None or other_key is None:
-            if self.version != other.version:
-                return other.version < self.version
-        elif self_key != other_key:
-            return other_key < self_key
+        if self.version != other.version:
+            return other.version < self.version
 
         return other.inclusive and not self.inclusive
 
@@ -267,13 +243,8 @@ class LowerBound:
         if other.version is None:
             return False
 
-        self_key = self.version._key_cache
-        other_key = other.version._key_cache
-        if self_key is None or other_key is None:
-            if self.version != other.version:
-                return self.version < other.version
-        elif self_key != other_key:
-            return self_key < other_key
+        if self.version != other.version:
+            return self.version < other.version
 
         return self.inclusive or not other.inclusive
 
@@ -337,14 +308,8 @@ class UpperBound:
         if other.version is None:
             return True
 
-        # Use cached keys when both exist; cold versions and boundaries use operators.
-        self_key = self.version._key_cache
-        other_key = other.version._key_cache
-        if self_key is None or other_key is None:
-            if self.version != other.version:
-                return self.version < other.version
-        elif self_key != other_key:
-            return self_key < other_key
+        if self.version != other.version:
+            return self.version < other.version
 
         # v) < v]: exclusive ends earlier.
         return not self.inclusive and other.inclusive
@@ -357,13 +322,8 @@ class UpperBound:
         if other.version is None:
             return False
 
-        self_key = self.version._key_cache
-        other_key = other.version._key_cache
-        if self_key is None or other_key is None:
-            if self.version != other.version:
-                return other.version < self.version
-        elif self_key != other_key:
-            return other_key < self_key
+        if self.version != other.version:
+            return other.version < self.version
 
         return self.inclusive and not other.inclusive
 
