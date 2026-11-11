@@ -29,6 +29,8 @@ def pytest_collection() -> None:
 
 
 def pytest_collection_finish(session: pytest.Session) -> None:
+    # Freeze the collected-item tree and imported modules into GC's permanent
+    # generation so per-test GC passes stop traversing them (~10% faster suite).
     gc.enable()
     gc.collect()
     # Hypothesis cannot inspect references held by frozen containers.
