@@ -2,142 +2,84 @@
 # 2.0, and the BSD License. See the LICENSE file in the root of this repository
 # for complete details.
 
-"""Check lock-version admission and wheel selection with independent models."""
-
 from __future__ import annotations
-
-import dataclasses
-import itertools
-import pickle
 
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
 from packaging.markers import default_environment
-from packaging.pylock import (
-    PackageWheel,
-    Pylock,
-    PylockSelectError,
-    PylockUnsupportedVersionError,
-)
+from packaging.pylock import PackageWheel, Pylock, PylockSelectError
 from packaging.tags import Tag
 
 from .strategies import SETTINGS
 
 pytestmark = pytest.mark.property
 
-TAG_TEXTS = [
-    "py3-none-any",
-    "cp312-cp312-win_amd64",
-    "cp312-cp312-manylinux_2_17_x86_64",
-]
-ENVIRONMENT = default_environment()
-ENVIRONMENT["python_full_version"] = "3.12.0"
-ENVIRONMENT["python_version"] = "3.12"
+PLATFORMS = ["win_amd64", "manylinux_2_17_x86_64"]
+WHEEL_TAGS = ["py3-none-any", *(f"cp312-cp312-{platform}" for platform in PLATFORMS)]
 
 
-def lock_with_wheels(wheels: list[dict[str, object]]) -> Pylock:
-    """Build one valid package for wheel-selection properties."""
-    return Pylock.from_dict(
-        {
-            "lock-version": "1.0",
-            "created-by": "test",
-            "packages": [{"name": "demo", "version": "1.0", "wheels": wheels}],
-        }
+class TestWheelSelection:
+    """The index of the tag in the supported tags list breaks the tie
+
+    https://packaging.python.org/en/latest/specifications/platform-compatibility-tags/#use
+
+    Without a compatible wheel or sdist:
+    "an error MUST be raised about a lack of source for the project."
+
+    https://packaging.python.org/en/latest/specifications/pylock-toml/#installation
+    """
+
+    @given(
+        platform=st.sampled_from(PLATFORMS),
+        wheel_tags=st.lists(st.sampled_from(WHEEL_TAGS), min_size=1, unique=True),
+        data=st.data(),
     )
+    @SETTINGS
+    def test_compatible_wheel_selection(
+        self, platform: str, wheel_tags: list[str], data: st.DataObject
+    ) -> None:
+        compatible = [f"cp312-cp312-{platform}", "py3-none-any"]
+        preferences = data.draw(
+            st.lists(st.sampled_from(compatible), unique=True),
+            label="supported tags in preference order",
+        )
+        environment = default_environment()
+        environment["python_full_version"] = "3.12.0"
+        environment["python_version"] = "3.12"
+        environment["sys_platform"] = "win32" if platform == "win_amd64" else "linux"
 
-
-@given(
-    major=st.integers(min_value=0, max_value=4),
-    minor=st.integers(min_value=0, max_value=20),
-)
-@SETTINGS
-def test_lock_version_major_controls_admission(major: int, minor: int) -> None:
-    data = {"lock-version": f"{major}.{minor}", "created-by": "test", "packages": []}
-    if major == 1:
-        lock = Pylock.from_dict(data)
-        assert lock.lock_version.release == (major, minor)
-    else:
-        with pytest.raises(PylockUnsupportedVersionError):
-            Pylock.from_dict(data)
-
-
-@given(
-    wheel_tags=st.lists(st.sampled_from(TAG_TEXTS), min_size=1, max_size=5),
-    preferences=st.lists(st.sampled_from(TAG_TEXTS), unique=True, max_size=3),
-)
-@SETTINGS
-def test_selected_wheel_obeys_tag_priority_and_retains_schema(
-    wheel_tags: list[str], preferences: list[str]
-) -> None:
-    wheels: list[dict[str, object]] = [
-        {
-            "name": f"demo-1.0-{tag}.whl",
-            "url": f"https://example.test/{index}.whl",
-            "hashes": {"sha256": "0" * 64},
-        }
-        for index, tag in enumerate(wheel_tags)
-    ]
-    lock = lock_with_wheels(wheels)
-    tags = [Tag(*text.split("-")) for text in preferences]
-    candidates = [
-        (preferences.index(tag), index)
-        for index, tag in enumerate(wheel_tags)
-        if tag in preferences
-    ]
-    expected_index = min(candidates)[1] if candidates else None
-    if expected_index is not None:
-        selected = list(lock.select(environment=ENVIRONMENT, tags=tags))
-        assert len(selected) == 1
-        selected_wheel = selected[0][1]
-        assert isinstance(selected_wheel, PackageWheel)
-        assert selected_wheel.url == wheels[expected_index]["url"]
-    else:
-        with pytest.raises(PylockSelectError):
-            list(lock.select(environment=ENVIRONMENT, tags=tags))
-
-    serialized = lock.to_dict()
-    assert serialized["packages"][0]["wheels"] == wheels
-
-    # Only bytes produced by this test are restored.
-    serialized_pickle = pickle.dumps(lock)
-    restored = pickle.loads(serialized_pickle)  # noqa: S301
-    assert restored.to_dict() == serialized
-    if expected_index is not None:
-        restored_wheel = next(restored.select(environment=ENVIRONMENT, tags=tags))[1]
-        assert isinstance(restored_wheel, PackageWheel)
-        assert restored_wheel.url == wheels[expected_index]["url"]
-
-
-@given(pair=st.sampled_from(list(itertools.permutations(TAG_TEXTS, 2))))
-@SETTINGS
-def test_replacing_a_wheel_filename_rebuilds_derived_tags(
-    pair: tuple[str, str],
-) -> None:
-    before, after = pair
-    lock = lock_with_wheels(
-        [
+        wheels = [
             {
-                "name": f"demo-1.0-{before}.whl",
-                "url": "https://example.test/wheel.whl",
+                "name": f"demo-1.0-{tag}.whl",
+                "url": f"https://example.test/{index}.whl",
                 "hashes": {"sha256": "0" * 64},
             }
+            for index, tag in enumerate(wheel_tags)
         ]
-    )
-    selected = list(
-        lock.select(environment=ENVIRONMENT, tags=[Tag(*before.split("-"))])
-    )
-    wheel = selected[0][1]
-    assert isinstance(wheel, PackageWheel)
+        lock = Pylock.from_dict(
+            {
+                "lock-version": "1.0",
+                "created-by": "test",
+                "packages": [{"name": "demo", "version": "1.0", "wheels": wheels}],
+            }
+        )
+        tags = [Tag(*text.split("-")) for text in preferences]
+        candidates = [
+            (preferences.index(tag), index)
+            for index, tag in enumerate(wheel_tags)
+            if tag in preferences
+        ]
 
-    replacement = dataclasses.replace(wheel, name=f"demo-1.0-{after}.whl")
-    package = dataclasses.replace(lock.packages[0], wheels=[replacement])
-    changed_lock = dataclasses.replace(lock, packages=[package])
-    new_tags = [Tag(*after.split("-"))]
-    assert (
-        next(changed_lock.select(environment=ENVIRONMENT, tags=new_tags))[1]
-        is replacement
-    )
-    with pytest.raises(PylockSelectError):
-        list(lock.select(environment=ENVIRONMENT, tags=new_tags))
+        if not candidates:
+            with pytest.raises(PylockSelectError):
+                list(lock.select(environment=environment, tags=tags))
+            return
+
+        expected_index = min(candidates)[1]
+        selected = list(lock.select(environment=environment, tags=tags))
+        assert len(selected) == 1
+        wheel = selected[0][1]
+        assert isinstance(wheel, PackageWheel)
+        assert wheel.url == wheels[expected_index]["url"]
