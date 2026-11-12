@@ -31,5 +31,10 @@ jobs:
         with:
           cache-suffix: ${{ github.job }}
 
+      - name: Install Nox
+        run: >-
+          uvx --python 3.14 pipx@1.18.13 install --force --suffix=-packaging
+          --backend uv --lock pylock.dev.toml --pip-args=--no-index nox
+
       - name: Build documentation
-        run: pipx run nox -s docs
+        run: uvx --python 3.14 pipx@1.18.13 exec nox-packaging nox -s docs

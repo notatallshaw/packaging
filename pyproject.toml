@@ -44,19 +44,70 @@ test = [
   "pytest>=6.2.0",
   "tomli; python_version<'3.11'",
   "tomli_w",
+  { include-group = "editable-build" },
 ]
 docs = [
-  "furo",
+  "furo; python_version >= '3.12'",
+  "sphinx>=9.1; python_version >= '3.12'",
+  { include-group = "editable-build" },
 ]
 benchmark = [
-  "asv",
+  "asv; python_version == \"3.14\" and implementation_name == \"cpython\"",
   "pip",
 ]
 dev = [
   { include-group = "test" },
+  { include-group = "docs" },
   { include-group = "benchmark" },
+  { include-group = "lint" },
+  { include-group = "nox" },
+  { include-group = "locks" },
+  { include-group = "licenses" },
 ]
 
+editable-build = [
+  "flit_core>=3.12",
+]
+lint = [
+  "prek",
+  "build",
+  "twine",
+  { include-group = "editable-build" },
+]
+nox = [
+  "nox>=2026.10.20",
+  "packaging",
+]
+build = ["build", "twine"]
+locks = [
+  "nab>=0.0.29",
+  "tomli_w",
+  "nox>=2026.10.20",
+  "pytest>=6.2.0",
+]
+licenses = [
+  "httpx",
+]
+pickle-21-0 = [
+  "packaging==21.0",
+  { include-group = "editable-build" },
+]
+pickle-24-0 = [
+  "packaging==24.0",
+  { include-group = "editable-build" },
+]
+pickle-25-0 = [
+  "packaging==25.0",
+  { include-group = "editable-build" },
+]
+pickle-26-0 = [
+  "packaging==26.0",
+  { include-group = "editable-build" },
+]
+pickle-26-1 = [
+  "packaging==26.1",
+  { include-group = "editable-build" },
+]
 
 [tool.flit.sdist]
 include = ["tests/", "docs/", "CHANGELOG.rst"]
@@ -75,6 +126,7 @@ ANDed = "ANDed"
 ORed = "ORed"
 
 [tool.typos.default.extend-words]
+certifi = "certifi"
 dynamc = "dynamc"
 notin = "notin"
 nd = "nd"
@@ -181,3 +233,57 @@ flake8-unused-arguments.ignore-variadic-names = true
 "src/packaging/_musllinux.py" = ["T20"]
 "docs/conf.py" = ["INP001", "S", "A001"]
 "noxfile.py" = ["T20", "S"]
+
+[tool.nab]
+mode = "universal"
+dist-policy = "sdist-if-needed"
+decision-order = "stable"
+uploaded-prior-to = "P7D"
+default-groups = ["nox"]
+
+
+[tool.nab.matrix]
+python = ">=3.10,<3.13"
+platforms = ["linux_x86_64", "linux_aarch64", "macos_x86_64", "macos_arm64", "windows_amd64"]
+
+[[tool.nab.matrix.include]]
+python = ">=3.13,<3.16"
+free-threaded = [true, false]
+
+[[tool.nab.matrix.include]]
+python = "==3.10"
+implementations = ["pypy"]
+platforms = [{id="linux_x86_64",pypy-abi="pp73"},{id="linux_aarch64",pypy-abi="pp73"},{id="macos_x86_64",pypy-abi="pp73"},{id="macos_arm64",pypy-abi="pp73"},{id="windows_amd64",pypy-abi="pp73"}]
+
+[[tool.nab.matrix.include]]
+python = "==3.11"
+implementations = ["pypy"]
+platforms = [{id="linux_x86_64",pypy-abi="pp80"},{id="linux_aarch64",pypy-abi="pp80"},{id="macos_x86_64",pypy-abi="pp80"},{id="macos_arm64",pypy-abi="pp80"},{id="windows_amd64",pypy-abi="pp80"}]
+
+[[tool.nab.matrix.include]]
+python = "==3.12"
+platforms = [{id="linux_x86_64", libc="musl", runs-on-libc="1.2"}]
+
+# The pinned PDM release needs this wheel before its cooldown ends.
+[tool.nab.packages."hishel==2.0.0"]
+uploaded-prior-to = "2026-11-05T14:10:40.115929Z"
+
+# Hypothesis cannot be built from source on PyPy or free-threaded Python.
+[tool.nab.packages.hypothesis]
+dist-policy = "wheel-only"
+
+# Use the reviewed locker release before its seven-day cooldown ends.
+[[tool.nab.package-rules]]
+match = [
+  "nab==0.0.29",
+  "nab-resolver==0.0.29",
+  "nab-markersets==0.0.29",
+  "nab-provider==0.0.29",
+  "nab-index==0.0.29",
+  "nab-project==0.0.29",
+]
+uploaded-prior-to = false
+
+[tool.packaging.build-lock]
+python = "3.14"
+platform = "linux_x86_64"

@@ -64,8 +64,13 @@ jobs:
             with:
               cache-suffix: ${{ github.job }}-${{ matrix.python_version }}
 
+      - name: Install Nox
+        run: >-
+          uvx --python 3.14 pipx@1.18.13 install --force --suffix=-packaging
+          --backend uv --lock pylock.dev.toml --pip-args=--no-index nox
+
       - name: Run nox
-        run: pipx run nox -s tests
+        run: uvx --python 3.14 pipx@1.18.13 exec nox-packaging nox -s tests
         env:
           NOXFORCEPYTHON: ${{ matrix.python_version }}
 
@@ -90,7 +95,12 @@ jobs:
           cache-suffix: ${{ github.job }}
 
       - name: Run tests
-        run: uv run --python python3 python -m pytest
+        run: |
+          uv venv --python python3 --seed .venv
+          .venv/bin/python -m pip install "pip>=26.3"
+          .venv/bin/python -m pip install --group pylock.dev.toml:test
+          .venv/bin/python -m pip install --no-deps --no-build-isolation -e .
+          .venv/bin/python -m pytest
         env:
           UV_PYTHON_PREFERENCE: only-system
 
@@ -113,8 +123,13 @@ jobs:
         with:
           cache-suffix: ${{ github.job }}
 
+      - name: Install Nox
+        run: >-
+          uvx --python 3.14 pipx@1.18.13 install --force --suffix=-packaging
+          --backend uv --lock pylock.dev.toml --pip-args=--no-index nox
+
       - name: Run nox
-        run: pipx run nox -s property_tests
+        run: uvx --python 3.14 pipx@1.18.13 exec nox-packaging nox -s property_tests
 
   downstream:
     name: Downstream ${{ matrix.project }}
@@ -154,10 +169,15 @@ jobs:
         with:
           cache-suffix: ${{ github.job }}-${{ matrix.project }}
 
+      - name: Install Nox
+        run: >-
+          uvx --python 3.14 pipx@1.18.13 install --force --suffix=-packaging
+          --backend uv --lock pylock.dev.toml --pip-args=--no-index nox
+
       - name: Run nox
         env:
           MATRIX_PROJECT: ${{ matrix.project }}
-        run: pipx run nox -s "downstream(project='$MATRIX_PROJECT')"
+        run: uvx --python 3.14 pipx@1.18.13 exec nox-packaging nox -s "downstream(project='$MATRIX_PROJECT')"
 
   pickle:
     name: Pickle test
@@ -177,8 +197,13 @@ jobs:
         with:
           cache-suffix: ${{ github.job }}
 
+      - name: Install Nox
+        run: >-
+          uvx --python 3.14 pipx@1.18.13 install --force --suffix=-packaging
+          --backend uv --lock pylock.dev.toml --pip-args=--no-index nox
+
       - name: Run nox
-        run: pipx run nox -s test_pickle
+        run: uvx --python 3.14 pipx@1.18.13 exec nox-packaging nox -s test_pickle
 
   pass:
     name: All pass

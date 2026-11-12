@@ -1,9 +1,29 @@
 Getting started
 ===============
 
-Working on packaging requires the installation of a small number of
-development dependencies. To see what dependencies are required to
-run the tests manually, please look at the ``noxfile.py`` file.
+Run Nox with the versions recorded in the standard development lock:
+
+.. code-block:: console
+
+    $ uvx --python 3.14 pipx@1.18.13 install --force --suffix=-packaging --backend uv --lock pylock.dev.toml nox
+    $ uvx --python 3.14 pipx@1.18.13 exec nox-packaging nox -s tests
+
+Pipx creates the environment automatically. The project-specific name keeps
+it separate from other Nox installations. The lock's default selection is
+just the Nox bootstrap; each session installs its own locked group.
+
+For an environment with all development tools, use the ``dev`` group:
+
+.. code-block:: console
+
+    $ uv venv --python 3.14
+    $ uv pip sync pylock.dev.toml --group dev
+    $ uv pip install --no-deps --no-build-isolation -e .
+
+Pip 26.3 or newer can install the same selection with
+``python -m pip install --group pylock.dev.toml:dev``. Nox retains its usual
+environment backend. Select one session group at a time; ``dev`` combines
+the compatible development tools.
 
 Running tests
 ~~~~~~~~~~~~~
@@ -91,6 +111,40 @@ Use `nox`_ to build the documentation. For example:
 
 The HTML documentation index can now be found at
 ``docs/_build/html/index.html``.
+
+Updating dependencies
+~~~~~~~~~~~~~~~~~~~~~
+
+Refresh the development and build locks with:
+
+.. code-block:: console
+
+    $ nox -s locks -- --upgrade
+
+``nox -s locks -- --locked`` checks the committed inputs without updating
+dependencies. A weekly workflow opens or updates a draft dependency PR.
+
+Downstream selections come from the releases in ``noxfile.py``. After changing
+one of those releases, regenerate its source snapshot
+before refreshing the locks:
+
+.. code-block:: console
+
+    $ python -m tasks.update_downstream_groups --project build
+    $ nox -s locks -- --upgrade
+
+The snapshot records each source archive's hash and declared dependencies.
+Lock refreshes combine these inputs with the groups and ``tool.nab`` settings
+in ``pyproject.toml``. To inspect the compiled input,
+run ``python -m tasks.update_downstream_groups --render``.
+Downstream tests can also create their own test environments; those fixtures
+retain their own installation rules.
+
+Build and deployment tools use the separate
+``pylock.build.toml``. Its requirements come from the ``build`` group and
+``build-system.requires`` in ``pyproject.toml``; ``tool.packaging.build-lock``
+selects its single Python 3.14 Linux environment. Builds use the installed backend
+without creating an additional build environment.
 
 .. _`pytest`: https://pypi.org/project/pytest/
 .. _`nox`: https://pypi.org/project/nox/
