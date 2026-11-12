@@ -31,5 +31,10 @@ jobs:
         with:
           cache-suffix: ${{ github.job }}
 
+      - name: Install Nox
+        run: |
+          python -m pip install "pip>=26.3"
+          python -m pip install --group pylock.dev.toml:nox
+
       - name: Build documentation
-        run: pipx run nox -s docs
+        run: nox -s docs

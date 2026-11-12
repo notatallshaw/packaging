@@ -3,9 +3,10 @@ Release Process
 
 #. Checkout the current ``main`` branch.
 
-#. Install the latest ``nox``::
+#. With Python 3.14 on Linux, install the locked build tools::
 
-    $ pip install nox
+    $ python -m pip install "pip>=26.3"
+    $ python -m pip install -r .github/requirements/pylock.build.toml
 
 #. Manually update the changelog to list all unreleased changes. Also verify
    that no new changes were added to a previous release in an earlier PR due to

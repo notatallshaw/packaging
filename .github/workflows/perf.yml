@@ -1,6 +1,7 @@
 name: Performance Benchmarks
 
 on:
+  workflow_dispatch:
   pull_request:
     branches:
       - main
@@ -39,9 +40,15 @@ jobs:
             with:
               cache-suffix: ${{ github.job }}
 
+      - name: Use Python 3.14 for ASV
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+
       - name: Setup ASV
         run: |
-          uv tool install asv
+          python -m pip install "pip>=26.3"
+          python -m pip install --group pylock.dev.toml:benchmark
           asv machine --yes
 
       - name: Run ASV continuous benchmark

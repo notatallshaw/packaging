@@ -1,0 +1,336 @@
+# This file is dual licensed under the terms of the Apache License, Version
+# 2.0, and the BSD License. See the LICENSE file in the root of this repository
+# for complete details.
+
+"""Check the dependency declarations and source identities used by downstream locks."""
+
+from __future__ import annotations
+
+import copy
+import hashlib
+import io
+import json
+import tarfile
+import urllib.request
+from typing import TYPE_CHECKING
+
+import nox
+import pytest
+
+import noxfile
+from noxfile import Project
+from packaging.requirements import Requirement
+from tasks import update_downstream_groups as groups
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+
+def _project(path: Path, text: str) -> None:
+    """Write an actual local project declaration for the input reader."""
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "pyproject.toml").write_text(text)
+
+
+def test_groups_local_extras_and_build_requirements(tmp_path: Path) -> None:
+    _project(
+        tmp_path,
+        """
+[project]
+name = "Example_Source"
+version = "1"
+dependencies = ["packaging>=24"]
+[project.optional-dependencies]
+test = ["pytest>=8", "pytest-mock"]
+[dependency-groups]
+test = ["example-source[test]", {include-group="coverage"}]
+coverage = ["coverage[toml]"]
+[build-system]
+requires = ["hatchling"]
+""",
+    )
+    config = Project(
+        "https://github.com/example/source", install=("-e.", "--group=test", "filelock")
+    )
+    requirements = {Requirement(item) for item in groups.requirements(tmp_path, config)}
+    assert requirements == {
+        Requirement(item)
+        for item in (
+            "packaging>=24",
+            "pytest>=8",
+            "pytest-mock",
+            "coverage[toml]",
+            "hatchling",
+            "filelock",
+        )
+    }
+
+
+def test_monorepo_sources_and_requirements_file(tmp_path: Path) -> None:
+    _project(
+        tmp_path,
+        """
+[project]
+name="frontend"
+version="1"
+dependencies=["backend>=1", "requests"]
+[build-system]
+requires=["hatchling"]
+""",
+    )
+    _project(
+        tmp_path / "backend",
+        """
+[project]
+name="backend"
+version="1"
+dependencies=["pluggy"]
+[project.optional-dependencies]
+test=["pytest-mock"]
+[build-system]
+requires=[]
+""",
+    )
+    (tmp_path / "requirements.txt").write_text("# Test tools\n\npytest>=8\n")
+    config = Project(
+        "https://github.com/example/source",
+        install=("-e.", "-e./backend[test]", "-r", "requirements.txt"),
+    )
+    assert set(groups.requirements(tmp_path, config)) == {
+        "requests",
+        "hatchling",
+        "pluggy",
+        "pytest-mock",
+        "pytest>=8",
+    }
+
+
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        'dynamic=["dependencies"]',
+        "dependencies=[\"source[test]; python_version < '3.12'\"]\n"
+        '[project.optional-dependencies]\ntest=["pytest"]',
+    ],
+)
+def test_unprepared_dynamic_or_conditional_source_metadata_is_refused(
+    tmp_path: Path,
+    declaration: str,
+) -> None:
+    _project(tmp_path, '[project]\nname="source"\nversion="1"\n' + declaration)
+    config = Project("https://github.com/example/source", install=("-e.",))
+    with pytest.raises(ValueError, match=r"dependencies|metadata"):
+        groups.requirements(tmp_path, config)
+
+
+@pytest.mark.parametrize(
+    ("python", "platform", "machine", "expected"),
+    [
+        ("3.14", "linux", "x86_64", True),
+        ("3.14", "win32", "AMD64", False),
+        ("3.10", "linux", "x86_64", False),
+        ("3.14", "linux", "aarch64", False),
+    ],
+)
+def test_downstream_roots_keep_their_original_markers(
+    python: str,
+    platform: str,
+    machine: str,
+    expected: bool,
+) -> None:
+    requirement = Requirement(
+        groups.target_requirement('pytest; python_version >= "3.12"')
+    )
+    assert requirement.marker is not None
+    assert (
+        requirement.marker.evaluate(
+            {
+                "python_version": python,
+                "sys_platform": platform,
+                "platform_machine": machine,
+            }
+        )
+        is expected
+    )
+
+
+def test_import_records_archive_hashes_and_common_wheel_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    content = b"""[project]
+name="pip"
+version="1"
+[dependency-groups]
+test=["pytest"]
+test-common-wheels=["setuptools<80"]
+"""
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        entry = tarfile.TarInfo("source/pyproject.toml")
+        entry.size = len(content)
+        archive.addfile(entry, io.BytesIO(content))
+    data = buffer.getvalue()
+    config = Project("https://github.com/example/source", pytest_before_9_1=True)
+    monkeypatch.setattr(groups, "PROJECTS", {"pip": config})
+
+    def download(configuration: Project) -> bytes:
+        assert configuration is config
+        return data
+
+    monkeypatch.setattr(groups, "download_project", download)
+    inputs = groups.import_sources()
+    assert inputs["projects"]["pip"]["sha256"] == hashlib.sha256(data).hexdigest()
+    assert set(inputs["projects"]["pip"]["requirements"]) == {"pytest", "pytest<9.1"}
+    assert inputs["pip_common_wheels"] == ["setuptools<80"]
+
+
+@pytest.fixture
+def snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> groups.LockInputs:
+    """Use a real project table and a matching persisted source snapshot."""
+    config = Project("https://github.com/example/source")
+    inputs: groups.LockInputs = {
+        "projects": {
+            "tox": {
+                "url": config.url,
+                "sha256": "a" * 64,
+                "install": list(config.install),
+                "pytest_before_9_1": False,
+                "editable_requires": [],
+                "requirements": ["setuptools>=81,<82"],
+            }
+        },
+        "pip_common_wheels": ["setuptools<80"],
+    }
+    declarations = "\n".join(
+        f'{name}=["{package}"]'
+        for name, package in zip(
+            groups.DEV_GROUPS,
+            ("pytest", "sphinx", "asv", "twine", "nox", "nab", "httpx"),
+            strict=True,
+        )
+    )
+    _project(
+        tmp_path,
+        '[project]\nname="example"\nversion="1"\ndependencies=["requests"]\n[build-system]\nrequires=["flit_core>=3.12"]\n[dependency-groups]\n'
+        + declarations
+        + "\ndev=[]\n[tool.example]\nvalue=1\n",
+    )
+    monkeypatch.setattr(groups, "ROOT", tmp_path)
+    monkeypatch.setattr(groups, "MANIFEST", tmp_path / "inputs.json")
+    monkeypatch.setattr(groups, "PROJECTS", {"tox": config})
+    groups.MANIFEST.write_text(json.dumps(inputs))
+    groups.update_groups(inputs)
+    return inputs
+
+
+@pytest.mark.usefixtures("snapshot")
+def test_generated_groups_preserve_project_metadata_and_close_build_inputs() -> None:
+    metadata = nox.project.load_toml(groups.ROOT / "pyproject.toml")
+    assert metadata["project"]["dependencies"] == ["requests"]
+    assert metadata["tool"]["example"]["value"] == 1
+    assert len(metadata["dependency-groups"]["dev"]) == len(groups.DEV_GROUPS)
+    downstream = metadata["dependency-groups"]["downstream-tox"]
+    assert {Requirement(req).name for req in downstream} == {"setuptools", "flit_core"}
+    groups.check_groups()
+
+
+@pytest.mark.parametrize(
+    "change", ["source", "install", "pytest", "requirements", "wheels", "dev"]
+)
+def test_stale_source_or_generated_groups_are_refused(
+    snapshot: groups.LockInputs,
+    change: str,
+) -> None:
+    inputs = copy.deepcopy(snapshot)
+    source = inputs["projects"]["tox"]
+    if change == "source":
+        source["url"] += "/different"
+    elif change == "install":
+        source["install"].append("pytest")
+    elif change == "pytest":
+        source["pytest_before_9_1"] = True
+    elif change == "requirements":
+        source["requirements"].append("wheel")
+    elif change == "wheels":
+        inputs["pip_common_wheels"].append("wheel")
+    else:
+        path = groups.ROOT / "pyproject.toml"
+        path.write_text(
+            path.read_text().replace(
+                'test = [\n  "pytest",', 'test = [\n  "pytest>=9",'
+            )
+        )
+    groups.MANIFEST.write_text(json.dumps(inputs))
+    with pytest.raises(ValueError, match="changed"):
+        groups.check_groups()
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,
+        [],
+        {},
+        {"projects": []},
+        {
+            "projects": {"tox": {"url": "https://example.invalid", "sha256": "bad"}},
+            "pip_common_wheels": [],
+        },
+    ],
+)
+def test_invalid_source_snapshots_are_refused(value: object) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        groups.read_inputs(value)
+
+
+@pytest.mark.parametrize("mismatch", [None, "archive", "url"])
+def test_runtime_archive_verification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mismatch: str | None,
+) -> None:
+    data = b"a source archive"
+    config = Project("https://github.com/example/source")
+    path = tmp_path / "tasks/downstream-lock-inputs.json"
+    path.parent.mkdir()
+    path.write_text(
+        json.dumps(
+            {
+                "projects": {
+                    "example": {
+                        "url": config.url,
+                        "sha256": hashlib.sha256(data).hexdigest(),
+                    }
+                }
+            }
+        )
+    )
+    monkeypatch.setattr(noxfile, "ROOT", tmp_path)
+    if mismatch == "archive":
+        data += b"changed"
+    elif mismatch == "url":
+        config = Project("https://github.com/example/different")
+    if mismatch is None:
+        noxfile.verify_project_source("example", config, data)
+    else:
+        with pytest.raises(ValueError, match="source changed"):
+            noxfile.verify_project_source("example", config, data)
+
+
+@pytest.mark.parametrize("binary", [True, False])
+def test_archive_download_requires_a_byte_stream(
+    monkeypatch: pytest.MonkeyPatch,
+    binary: bool,
+) -> None:
+    config = Project("https://github.com/example/source")
+
+    def open_source(url: str) -> io.BytesIO | io.StringIO:
+        assert url == config.url
+        return io.BytesIO(b"archive") if binary else io.StringIO("archive")
+
+    monkeypatch.setattr(urllib.request, "urlopen", open_source)
+    if binary:
+        assert noxfile.download_project(config) == b"archive"
+    else:
+        with pytest.raises(TypeError, match="archive bytes"):
+            noxfile.download_project(config)

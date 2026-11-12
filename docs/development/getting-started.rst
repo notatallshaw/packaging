@@ -1,9 +1,28 @@
 Getting started
 ===============
 
-Working on packaging requires the installation of a small number of
-development dependencies. To see what dependencies are required to
-run the tests manually, please look at the ``noxfile.py`` file.
+Use Python 3.14 and the shared development lock to set up an environment:
+
+.. code-block:: console
+
+    $ python -m venv .venv
+    $ . .venv/bin/activate
+    $ python -m pip install "pip>=26.3"
+    $ python -m pip install -r pylock.dev.toml
+    $ python -m pip install --no-deps --no-build-isolation -e .
+
+The lock uses the standard PEP 751 format. For example, uv can install
+the same development selection:
+
+.. code-block:: console
+
+    $ uv venv --python 3.14
+    $ uv pip install -r pylock.dev.toml
+    $ uv pip install --no-deps --no-build-isolation -e .
+
+Nox selects each session's dependencies from this file, retaining its usual
+environment backend. Named lock selections use pip 26.3 or newer. Select
+one session group at a time; ``dev`` combines the development tools.
 
 Running tests
 ~~~~~~~~~~~~~
@@ -91,6 +110,36 @@ Use `nox`_ to build the documentation. For example:
 
 The HTML documentation index can now be found at
 ``docs/_build/html/index.html``.
+
+Updating dependencies
+~~~~~~~~~~~~~~~~~~~~~
+
+Refresh the development and build locks with:
+
+.. code-block:: console
+
+    $ nox -s locks -- --upgrade
+
+``nox -s locks -- --locked`` checks the committed inputs without updating
+dependencies. A weekly workflow opens or updates a draft dependency PR.
+
+Downstream selections come from the releases in ``noxfile.py``. After changing
+one of those releases, regenerate its source snapshot and dependency group
+before refreshing the locks:
+
+.. code-block:: console
+
+    $ python -m tasks.update_downstream_groups --project build
+    $ nox -s locks -- --upgrade
+
+The snapshot records each source archive's hash and declared dependencies.
+Downstream tests can also create their own test environments; those fixtures
+retain their own installation rules.
+
+Build and deployment tools use the separate
+``.github/requirements/pylock.build.toml``, generated from ``build.toml`` in
+the same directory for Python 3.14 on Linux. Builds use the installed backend
+without creating an additional build environment.
 
 .. _`pytest`: https://pypi.org/project/pytest/
 .. _`nox`: https://pypi.org/project/nox/

@@ -1,0 +1,15 @@
+[project]
+name = "packaging-build-tools"
+version = "0"
+requires-python = ">=3.14,<3.15"
+dependencies = ["build", "twine", "nox>=2026.10.20", "flit_core >=3.12"]
+
+[tool.nab]
+mode = "specific"
+decision-order = "stable"
+uploaded-prior-to = "P7D"
+dist-policy = "wheel-only"
+
+[tool.nab.environment]
+python = "3.14"
+platform = "linux_x86_64"
