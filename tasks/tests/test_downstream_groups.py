@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 
 import nox
 import pytest
+import tomli_w
 
 import noxfile
 from noxfile import Project
@@ -203,29 +204,40 @@ def snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> groups.LockInpu
         },
         "pip_common_wheels": ["setuptools<80"],
     }
-    declarations = "\n".join(
-        f'{name}=["{package}"]'
-        for name, package in zip(
-            groups.DEV_GROUPS,
-            ("pytest", "sphinx", "asv", "twine", "nox", "nab", "httpx"),
-            strict=True,
-        )
-    )
-    _project(
-        tmp_path,
-        '[project]\nname="example"\nversion="1"\ndependencies=["requests"]\n[build-system]\nrequires=["flit_core>=3.12"]\n[dependency-groups]\n'
-        + declarations
-        + "\ndev=[]\n[tool.example]\nvalue=1\n",
-    )
+    declarations = {
+        "test": ["pytest"],
+        "docs": ["sphinx"],
+        "benchmark": ["asv"],
+        "lint": ["twine"],
+        "nox": ["nox"],
+        "locks": ["nab"],
+        "licenses": ["httpx"],
+    }
+    metadata = {
+        "project": {"name": "example", "version": "1", "dependencies": ["requests"]},
+        "build-system": {"requires": ["flit_core>=3.12"]},
+        "dependency-groups": {
+            **declarations,
+            "dev": [{"include-group": name} for name in declarations],
+            "build": ["build", "twine", "nox"],
+        },
+        "tool": {
+            "example": {"value": 1},
+            "nab": {
+                "default-groups": ["dev"],
+                "decision-order": "stable",
+                "uploaded-prior-to": "P7D",
+            },
+            "packaging": {"build-lock": {"python": "3.14", "platform": "linux_x86_64"}},
+        },
+    }
+    _project(tmp_path, tomli_w.dumps(metadata))
     monkeypatch.setattr(groups, "ROOT", tmp_path)
     monkeypatch.setattr(groups, "MANIFEST", tmp_path / "inputs.json")
     monkeypatch.setattr(groups, "PROJECTS", {"tox": config})
     monkeypatch.setattr(refresh, "ROOT", tmp_path)
     monkeypatch.setattr(refresh, "MANIFEST", groups.MANIFEST)
     groups.MANIFEST.write_text(json.dumps(inputs))
-    policy = tmp_path / ".github/requirements/dev.toml"
-    policy.parent.mkdir(parents=True)
-    policy.write_text('[tool.nab]\ndefault-groups=["dev"]\n')
     return inputs
 
 
@@ -236,7 +248,28 @@ def test_generated_groups_preserve_project_metadata_and_close_build_inputs() -> 
         metadata = nox.project.load_toml(path)
     assert metadata["project"]["dependencies"] == ["requests"]
     assert metadata["tool"]["example"]["value"] == 1
-    assert len(metadata["dependency-groups"]["dev"]) == len(groups.DEV_GROUPS)
+    assert set(metadata["dependency-groups"]["dev"]) == {
+        "pytest",
+        "sphinx",
+        "asv",
+        "twine",
+        "nox",
+        "nab",
+        "httpx",
+    }
+    assert "build" not in metadata["dependency-groups"]
+    assert {member["group"] for member in metadata["tool"]["nab"]["conflicts"][0]} == {
+        "test",
+        "docs",
+        "benchmark",
+        "lint",
+        "nox",
+        "locks",
+        "licenses",
+        "dev",
+        "downstream-tox",
+        "downstream-pip-wheels",
+    }
     downstream = metadata["dependency-groups"]["downstream-tox"]
     assert {Requirement(req).name for req in downstream} == {"setuptools", "flit_core"}
     assert metadata["tool"]["nab"]["default-groups"] == ["dev"]
@@ -275,9 +308,9 @@ def test_changed_inputs_reach_the_generated_project(
         group, expected = "downstream-pip-wheels", "wheel"
     else:
         path = groups.ROOT / "pyproject.toml"
-        path.write_text(
-            path.read_text().replace('test=["pytest"]', 'test=["pytest>=9"]')
-        )
+        metadata = nox.project.load_toml(path)
+        metadata["dependency-groups"]["test"] = ["pytest>=9"]
+        path.write_text(tomli_w.dumps(metadata))
         group, expected = "dev", "pytest>=9"
     groups.MANIFEST.write_text(json.dumps(inputs))
     groups.check_sources()
@@ -287,11 +320,53 @@ def test_changed_inputs_reach_the_generated_project(
 
 
 @pytest.mark.usefixtures("snapshot")
+def test_build_inputs_use_the_declared_tools_backend_and_environment() -> None:
+    path = groups.ROOT / "pyproject.toml"
+    metadata = nox.project.load_toml(path)
+    metadata["build-system"]["requires"] = ["hatchling>=1.30"]
+    metadata["tool"]["packaging"]["build-lock"]["python"] = "3.15"
+    path.write_text(tomli_w.dumps(metadata))
+
+    with refresh.generated_project(build=True) as compiled:
+        result = nox.project.load_toml(compiled)
+
+    assert result["project"]["requires-python"] == ">=3.15,<3.16"
+    assert result["project"]["dependencies"] == [
+        "build",
+        "twine",
+        "nox",
+        "hatchling>=1.30",
+    ]
+    assert result["tool"]["nab"]["environment"] == {
+        "python": "3.15",
+        "platform": "linux_x86_64",
+    }
+    assert result["tool"]["nab"]["dist-policy"] == "wheel-only"
+    assert "matrix" not in result["tool"]["nab"]
+
+
+@pytest.mark.usefixtures("snapshot")
+def test_new_contexts_are_isolated_without_a_second_configuration() -> None:
+    path = groups.ROOT / "pyproject.toml"
+    metadata = nox.project.load_toml(path)
+    metadata["dependency-groups"]["extra-check"] = ["wheel"]
+    path.write_text(tomli_w.dumps(metadata))
+
+    with refresh.generated_project() as compiled:
+        result = nox.project.load_toml(compiled)
+
+    assert {"group": "extra-check"} in result["tool"]["nab"]["conflicts"][0]
+
+
+@pytest.mark.usefixtures("snapshot")
 @pytest.mark.parametrize("fail", [False, True])
-def test_compiled_inputs_are_removed_after_the_lock_operation(fail: bool) -> None:
+@pytest.mark.parametrize("build", [False, True])
+def test_compiled_inputs_are_removed_after_the_lock_operation(
+    fail: bool, build: bool
+) -> None:
     context = pytest.raises(RuntimeError) if fail else nullcontext()
     generated: Path | None = None
-    with context, refresh.generated_project() as path:
+    with context, refresh.generated_project(build=build) as path:
         generated = path
         assert path.parent == groups.ROOT
         assert path.is_file()

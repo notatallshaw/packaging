@@ -60,19 +60,19 @@ jobs:
         with:
           python-version: "3.14"
 
-      - name: Install build tools
-        run: |
-          python -m pip install "pip>=26.3"
-          python -m pip install -r .github/requirements/pylock.build.toml
+      - name: Install locked Nox
+        run: >-
+          uvx --python 3.14 pipx@1.18.13 install --force --suffix=-packaging
+          --backend uv --lock pylock.dev.toml --pip-args=--no-index nox
 
       - name: Provision nox environment
-        run: nox --install-only -s release_build
+        run: uvx --python 3.14 pipx@1.18.13 exec nox-packaging nox --install-only -s release_build
 
       - name: Build distribution via nox
         run: |
           SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
           export SOURCE_DATE_EPOCH
-          nox --no-install -R -s release_build
+          uvx --python 3.14 pipx@1.18.13 exec nox-packaging nox --no-install -R -s release_build
 
       - name: Upload distribution
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # 7.0.2

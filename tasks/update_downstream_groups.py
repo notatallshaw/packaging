@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
 import nox
+import tomli_w
 
 from noxfile import PROJECTS, Project, download_project
 from packaging.markers import Marker
@@ -24,7 +25,7 @@ from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "tasks/downstream-lock-inputs.json"
@@ -32,7 +33,6 @@ TARGET = (
     'python_version == "3.14" and sys_platform == "linux"'
     ' and platform_machine == "x86_64" and implementation_name == "cpython"'
 )
-DEV_GROUPS = ("test", "docs", "benchmark", "lint", "nox", "locks", "licenses")
 
 
 class SourceSnapshot(TypedDict):
@@ -230,30 +230,6 @@ def _downstream_groups(manifest: LockInputs, build: list[str]) -> dict[str, list
     return groups
 
 
-def _development_requirements(groups: Mapping[str, object]) -> list[str]:
-    """Combine compatible development contexts without selecting exclusive groups."""
-    return sorted(
-        set(nox.project.dependency_groups({"dependency-groups": groups}, *DEV_GROUPS))
-    )
-
-
-def _render_groups(groups: Mapping[str, list[str | dict[str, str]]]) -> str:
-    """Write the PEP 735 table while leaving other project configuration intact."""
-    lines = ["[dependency-groups]"]
-    for name, values in groups.items():
-        lines.append(f"{name} = [")
-        for value in values:
-            if isinstance(value, str):
-                rendered = json.dumps(value)
-            else:
-                rendered = (
-                    "{ include-group = " + json.dumps(value["include-group"]) + " }"
-                )
-            lines.append(f"  {rendered},")
-        lines.append("]")
-    return "\n".join(lines) + "\n\n"
-
-
 def project_text(manifest: LockInputs) -> str:
     """Combine project groups, source snapshots and target policy for locking."""
     path = ROOT / "pyproject.toml"
@@ -261,20 +237,17 @@ def project_text(manifest: LockInputs) -> str:
     groups = {
         name: values
         for name, values in metadata["dependency-groups"].items()
-        if not name.startswith("downstream-")
+        if not name.startswith("downstream-") and name != "build"
     }
-    groups["dev"] = _development_requirements(groups)
+    # Flatten includes to keep dev a single selection in the conflict set.
+    groups["dev"] = sorted(set(nox.project.dependency_groups(metadata, "dev")))
     groups.update(_downstream_groups(manifest, metadata["build-system"]["requires"]))
-    text, count = re.subn(
-        r"(?ms)^\[dependency-groups\]\n.*?(?=^\[|\Z)",
-        lambda _: _render_groups(groups),
-        path.read_text(),
-        count=1,
-    )
-    if count != 1:
-        raise ValueError("expected an explicit [dependency-groups] table")
-    policy = (ROOT / ".github/requirements/dev.toml").read_text()
-    return text + policy
+    metadata["dependency-groups"] = groups
+    # Each test or tooling session is resolved independently, including new snapshots.
+    metadata["tool"]["nab"]["conflicts"] = [
+        [{"group": name} for name in groups if name != "editable-build"]
+    ]
+    return tomli_w.dumps(metadata)
 
 
 def check_sources() -> None:

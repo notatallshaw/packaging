@@ -1,28 +1,29 @@
 Getting started
 ===============
 
-Use Python 3.14 and the shared development lock to set up an environment:
+Run Nox with the versions recorded in the standard development lock:
 
 .. code-block:: console
 
-    $ python -m venv .venv
-    $ . .venv/bin/activate
-    $ python -m pip install "pip>=26.3"
-    $ python -m pip install -r pylock.dev.toml
-    $ python -m pip install --no-deps --no-build-isolation -e .
+    $ uvx --python 3.14 pipx@1.18.13 install --force --suffix=-packaging --backend uv --lock pylock.dev.toml nox
+    $ uvx --python 3.14 pipx@1.18.13 exec nox-packaging nox -s tests
 
-The lock uses the standard PEP 751 format. For example, uv can install
-the same development selection:
+Pipx creates the environment automatically. The project-specific name keeps
+it separate from other Nox installations. The lock's default selection is
+just the Nox bootstrap; each session installs its own locked group.
+
+For an environment with all development tools, use the ``dev`` group:
 
 .. code-block:: console
 
     $ uv venv --python 3.14
-    $ uv pip install -r pylock.dev.toml
+    $ uv pip sync pylock.dev.toml --group dev
     $ uv pip install --no-deps --no-build-isolation -e .
 
-Nox selects each session's dependencies from this file, retaining its usual
-environment backend. Named lock selections use pip 26.3 or newer. Select
-one session group at a time; ``dev`` combines the development tools.
+Pip 26.3 or newer can install the same selection with
+``python -m pip install --group pylock.dev.toml:dev``. Nox retains its usual
+environment backend. Select one session group at a time; ``dev`` combines
+the compatible development tools.
 
 Running tests
 ~~~~~~~~~~~~~
@@ -133,15 +134,16 @@ before refreshing the locks:
     $ nox -s locks -- --upgrade
 
 The snapshot records each source archive's hash and declared dependencies.
-Lock refreshes combine these inputs with the project's groups and the target
-settings in ``.github/requirements/dev.toml``. To inspect the compiled input,
+Lock refreshes combine these inputs with the groups and ``tool.nab`` settings
+in ``pyproject.toml``. To inspect the compiled input,
 run ``python -m tasks.update_downstream_groups --render``.
 Downstream tests can also create their own test environments; those fixtures
 retain their own installation rules.
 
 Build and deployment tools use the separate
-``.github/requirements/pylock.build.toml``, generated from ``build.toml`` in
-the same directory for Python 3.14 on Linux. Builds use the installed backend
+``pylock.build.toml``. Its requirements come from the ``build`` group and
+``build-system.requires`` in ``pyproject.toml``; ``tool.packaging.build-lock``
+selects its single Python 3.14 Linux environment. Builds use the installed backend
 without creating an additional build environment.
 
 .. _`pytest`: https://pypi.org/project/pytest/

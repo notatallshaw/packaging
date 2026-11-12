@@ -32,27 +32,28 @@ jobs:
         with:
           python-version: "3.14"
 
-      - run: python -m pip install "pip>=26.3"
-      - run: python -m pip install --group pylock.dev.toml:nox
-
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
 
+      - name: Install locked Nox
+        run: >-
+          uvx --python 3.14 pipx@1.18.13 install --force --suffix=-packaging
+          --backend uv --lock pylock.dev.toml --pip-args=--no-index nox
+
       - name: Refresh with the current checkout
-        run: python -m nox -s locks -- --upgrade
+        run: uvx --python 3.14 pipx@1.18.13 exec nox-packaging nox -s locks -- --upgrade
 
       - name: Check refreshed locks
-        run: python -m nox -s locks -- --locked
+        run: uvx --python 3.14 pipx@1.18.13 exec nox-packaging nox -s locks -- --locked
 
       - name: Check lock tooling
-        run: python -m nox -s lock_tests
+        run: uvx --python 3.14 pipx@1.18.13 exec nox-packaging nox -s lock_tests
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: refreshed-locks
           path: |
             pylock.dev.toml
-            .github/requirements/pylock.build.toml
-          include-hidden-files: true
+            pylock.build.toml
           if-no-files-found: error
           retention-days: 1
 

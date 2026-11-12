@@ -47,7 +47,7 @@ ROOT = Path(__file__).resolve().parent
 PYPROJECT = nox.project.load_toml(ROOT / "pyproject.toml")
 PYTHON_VERSIONS = nox.project.python_versions(PYPROJECT)
 DEV_LOCK = ROOT / "pylock.dev.toml"
-BUILD_LOCK = ROOT / ".github/requirements/pylock.build.toml"
+BUILD_LOCK = ROOT / "pylock.build.toml"
 PYTEST_91_UPLOAD_CUTOFF = "2026-06-12 00:00:00Z"
 
 # Interpreters that run the tests without coverage, because tracing is too slow
@@ -145,6 +145,14 @@ def property_tests(session: nox.Session) -> None:
         "property",
         *session.posargs,
     )
+
+
+@nox.session(python="3.14", default=False)
+def benchmark(session: nox.Session) -> None:
+    """Run ASV with the locked benchmark tools."""
+    _install_group(session, "benchmark")
+    session.run("asv", "machine", "--yes")
+    session.run("asv", *session.posargs)
 
 
 @nox.session(python="3.14", default=False)

@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from collections.abc import Generator, Mapping
 
 ROOT = Path(__file__).resolve().parents[1]
-LOCKS = ("pylock.dev.toml", ".github/requirements/pylock.build.toml")
+LOCKS = ("pylock.dev.toml", "pylock.build.toml")
 BRANCH = "ci/update-locks"
 TITLE = "build(deps): refresh development and build locks"
 BODY = (
