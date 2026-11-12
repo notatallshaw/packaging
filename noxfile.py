@@ -156,7 +156,7 @@ def locks(session: nox.Session) -> None:
 
 @nox.session(python="3.14", default=False)
 def lock_tests(session: nox.Session) -> None:
-    """Exercise source-group import and the automated update publisher."""
+    """Exercise compiled lock inputs and the automated update publisher."""
     _install_group(session, "locks")
     # The library suite disables tmpdir; these tests exercise source files.
     session.run(

@@ -124,7 +124,7 @@ Refresh the development and build locks with:
 dependencies. A weekly workflow opens or updates a draft dependency PR.
 
 Downstream selections come from the releases in ``noxfile.py``. After changing
-one of those releases, regenerate its source snapshot and dependency group
+one of those releases, regenerate its source snapshot
 before refreshing the locks:
 
 .. code-block:: console
@@ -133,6 +133,9 @@ before refreshing the locks:
     $ nox -s locks -- --upgrade
 
 The snapshot records each source archive's hash and declared dependencies.
+Lock refreshes combine these inputs with the project's groups and the target
+settings in ``.github/requirements/dev.toml``. To inspect the compiled input,
+run ``python -m tasks.update_downstream_groups --render``.
 Downstream tests can also create their own test environments; those fixtures
 retain their own installation rules.
 

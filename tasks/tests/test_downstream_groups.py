@@ -12,6 +12,7 @@ import io
 import json
 import tarfile
 import urllib.request
+from contextlib import nullcontext
 from typing import TYPE_CHECKING
 
 import nox
@@ -20,6 +21,7 @@ import pytest
 import noxfile
 from noxfile import Project
 from packaging.requirements import Requirement
+from tasks import refresh_locks as refresh
 from tasks import update_downstream_groups as groups
 
 if TYPE_CHECKING:
@@ -218,26 +220,32 @@ def snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> groups.LockInpu
     monkeypatch.setattr(groups, "ROOT", tmp_path)
     monkeypatch.setattr(groups, "MANIFEST", tmp_path / "inputs.json")
     monkeypatch.setattr(groups, "PROJECTS", {"tox": config})
+    monkeypatch.setattr(refresh, "ROOT", tmp_path)
+    monkeypatch.setattr(refresh, "MANIFEST", groups.MANIFEST)
     groups.MANIFEST.write_text(json.dumps(inputs))
-    groups.update_groups(inputs)
+    policy = tmp_path / ".github/requirements/dev.toml"
+    policy.parent.mkdir(parents=True)
+    policy.write_text('[tool.nab]\ndefault-groups=["dev"]\n')
     return inputs
 
 
 @pytest.mark.usefixtures("snapshot")
 def test_generated_groups_preserve_project_metadata_and_close_build_inputs() -> None:
-    metadata = nox.project.load_toml(groups.ROOT / "pyproject.toml")
+    source = (groups.ROOT / "pyproject.toml").read_bytes()
+    with refresh.generated_project() as path:
+        metadata = nox.project.load_toml(path)
     assert metadata["project"]["dependencies"] == ["requests"]
     assert metadata["tool"]["example"]["value"] == 1
     assert len(metadata["dependency-groups"]["dev"]) == len(groups.DEV_GROUPS)
     downstream = metadata["dependency-groups"]["downstream-tox"]
     assert {Requirement(req).name for req in downstream} == {"setuptools", "flit_core"}
-    groups.check_groups()
+    assert metadata["tool"]["nab"]["default-groups"] == ["dev"]
+    assert (groups.ROOT / "pyproject.toml").read_bytes() == source
+    groups.check_sources()
 
 
-@pytest.mark.parametrize(
-    "change", ["source", "install", "pytest", "requirements", "wheels", "dev"]
-)
-def test_stale_source_or_generated_groups_are_refused(
+@pytest.mark.parametrize("change", ["source", "install", "pytest"])
+def test_stale_source_selections_are_refused(
     snapshot: groups.LockInputs,
     change: str,
 ) -> None:
@@ -249,20 +257,67 @@ def test_stale_source_or_generated_groups_are_refused(
         source["install"].append("pytest")
     elif change == "pytest":
         source["pytest_before_9_1"] = True
-    elif change == "requirements":
-        source["requirements"].append("wheel")
+    groups.MANIFEST.write_text(json.dumps(inputs))
+    with pytest.raises(ValueError, match="changed"):
+        groups.check_sources()
+
+
+@pytest.mark.parametrize("change", ["requirements", "wheels", "dev"])
+def test_changed_inputs_reach_the_generated_project(
+    snapshot: groups.LockInputs, change: str
+) -> None:
+    inputs = copy.deepcopy(snapshot)
+    if change == "requirements":
+        inputs["projects"]["tox"]["requirements"].append("wheel")
+        group, expected = "downstream-tox", "wheel"
     elif change == "wheels":
         inputs["pip_common_wheels"].append("wheel")
+        group, expected = "downstream-pip-wheels", "wheel"
     else:
         path = groups.ROOT / "pyproject.toml"
         path.write_text(
-            path.read_text().replace(
-                'test = [\n  "pytest",', 'test = [\n  "pytest>=9",'
-            )
+            path.read_text().replace('test=["pytest"]', 'test=["pytest>=9"]')
         )
+        group, expected = "dev", "pytest>=9"
     groups.MANIFEST.write_text(json.dumps(inputs))
-    with pytest.raises(ValueError, match="changed"):
-        groups.check_groups()
+    groups.check_sources()
+    with refresh.generated_project() as path:
+        selected = nox.project.load_toml(path)["dependency-groups"][group]
+    assert any(str(Requirement(req)).split(";")[0] == expected for req in selected)
+
+
+@pytest.mark.usefixtures("snapshot")
+@pytest.mark.parametrize("fail", [False, True])
+def test_compiled_inputs_are_removed_after_the_lock_operation(fail: bool) -> None:
+    context = pytest.raises(RuntimeError) if fail else nullcontext()
+    generated: Path | None = None
+    with context, refresh.generated_project() as path:
+        generated = path
+        assert path.parent == groups.ROOT
+        assert path.is_file()
+        if fail:
+            raise RuntimeError("lock failed")
+    assert generated is not None
+    assert not generated.exists()
+
+
+@pytest.mark.usefixtures("snapshot")
+def test_compiled_input_path_is_stable_between_refreshes() -> None:
+    with refresh.generated_project() as first:
+        contents = first.read_bytes()
+    with refresh.generated_project() as second:
+        assert second == first
+        assert second.read_bytes() == contents
+
+
+@pytest.mark.usefixtures("snapshot")
+def test_compilation_does_not_overwrite_an_existing_file() -> None:
+    with refresh.generated_project() as path:
+        pass
+    path.write_text("existing file")
+    with pytest.raises(FileExistsError), refresh.generated_project():
+        pass
+    assert path.read_text() == "existing file"
 
 
 @pytest.mark.parametrize(

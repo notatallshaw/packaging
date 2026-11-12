@@ -1,6 +1,7 @@
 *.egg-info/
 *.egg
 *.py[co]
+.pyproject-lock.toml
 
 .[nt]ox/
 .cache/

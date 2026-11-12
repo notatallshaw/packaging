@@ -254,8 +254,8 @@ def _render_groups(groups: Mapping[str, list[str | dict[str, str]]]) -> str:
     return "\n".join(lines) + "\n\n"
 
 
-def update_groups(manifest: LockInputs) -> None:
-    """Replace generated development and downstream groups in the project table."""
+def project_text(manifest: LockInputs) -> str:
+    """Combine project groups, source snapshots and target policy for locking."""
     path = ROOT / "pyproject.toml"
     metadata = nox.project.load_toml(path)
     groups = {
@@ -273,18 +273,15 @@ def update_groups(manifest: LockInputs) -> None:
     )
     if count != 1:
         raise ValueError("expected an explicit [dependency-groups] table")
-    path.write_text(text)
+    policy = (ROOT / ".github/requirements/dev.toml").read_text()
+    return text + policy
 
 
-def check_groups() -> None:
-    """Refuse stale source selections or hand-edited generated requirements."""
+def check_sources() -> None:
+    """Refuse source snapshots that no longer match the downstream sessions."""
     manifest = read_inputs(json.loads(MANIFEST.read_text()))
-    groups = nox.project.load_toml(ROOT / "pyproject.toml")["dependency-groups"]
-    expected_dev = _development_requirements(groups)
-    if groups["dev"] != expected_dev:
-        raise ValueError("development groups changed; regenerate the dev group")
     if set(manifest["projects"]) != set(PROJECTS):
-        raise ValueError("downstream projects changed; regenerate their groups")
+        raise ValueError("downstream projects changed; refresh source snapshots")
     for name, cfg in PROJECTS.items():
         entry = manifest["projects"][name]
         if (
@@ -293,30 +290,23 @@ def check_groups() -> None:
             or entry["pytest_before_9_1"] != cfg.pytest_before_9_1
             or entry["editable_requires"] != list(cfg.editable_requires)
         ):
-            message = f"{name} changed; regenerate downstream groups"
+            message = f"{name} changed; refresh its source snapshot"
             raise ValueError(message)
-    build = nox.project.load_toml(ROOT / "pyproject.toml")["build-system"]["requires"]
-    expected = _downstream_groups(manifest, build)
-    actual = {
-        name: values
-        for name, values in groups.items()
-        if name.startswith("downstream-")
-    }
-    if actual != expected:
-        message = "generated downstream requirements changed"
-        raise ValueError(message)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--render", action="store_true")
     parser.add_argument("--project", action="append", choices=sorted(PROJECTS))
     args = parser.parse_args()
     if args.check:
-        check_groups()
+        check_sources()
+    elif args.render:
+        check_sources()
+        print(project_text(read_inputs(json.loads(MANIFEST.read_text()))), end="")
     else:
         manifest = import_sources(args.project)
-        update_groups(manifest)
         MANIFEST.write_text(json.dumps(manifest, indent=2) + "\n")
 
 
