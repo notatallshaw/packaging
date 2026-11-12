@@ -64,3 +64,15 @@ uploaded-prior-to = "2026-11-05T14:10:40.115929Z"
 # Hypothesis source builds are unavailable on PyPy and free-threaded CPython.
 [tool.nab.packages.hypothesis]
 dist-policy = "wheel-only"
+
+# Use the reviewed locker release before its seven-day cooldown ends.
+[[tool.nab.package-rules]]
+match = [
+  "nab==0.0.29",
+  "nab-resolver==0.0.29",
+  "nab-markersets==0.0.29",
+  "nab-provider==0.0.29",
+  "nab-index==0.0.29",
+  "nab-project==0.0.29",
+]
+uploaded-prior-to = false
