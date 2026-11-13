@@ -223,13 +223,13 @@ class Tokenizer:
         open_position = self.position
         token = self.read()
         assert token.name == open_token, f"Expected {open_token!r}, have {token!r}"
+        del token
 
         yield
 
-        if not self.check(close_token):
+        assert close_token in self.rules, f"Unknown token name: {close_token!r}"
+        if self.match_pattern(self.rules[close_token]) is None:
             self.raise_syntax_error(
                 f"Expected matching {close_token} for {open_token}, after {around}",
                 span_start=open_position,
             )
-
-        self.read()

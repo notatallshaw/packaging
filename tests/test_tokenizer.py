@@ -55,6 +55,34 @@ def test_enclosing_tokens() -> None:
     assert tokenizer.position == 2
 
 
+def test_enclosing_tokens_with_multicharacter_closing_rule() -> None:
+    tokenizer = Tokenizer(
+        "(x))",
+        rules={
+            "LP": re.compile(r"\("),
+            "RP": re.compile(r"\)\)"),
+            "NAME": re.compile("x"),
+        },
+    )
+    assert tokenizer.check("LP")
+    with tokenizer.enclosing_tokens("LP", "RP", around="name"):
+        tokenizer.expect("NAME", expected="name")
+
+    assert tokenizer.position == len(tokenizer.source)
+    assert tokenizer.next_token is None
+
+
+def test_enclosing_tokens_with_unknown_closing_rule() -> None:
+    tokenizer = Tokenizer("(", rules={"LP": re.compile(r"\(")})
+    assert tokenizer.check("LP")
+
+    with (
+        pytest.raises(AssertionError, match="Unknown token name"),
+        tokenizer.enclosing_tokens("LP", "RP", around="name"),
+    ):
+        pass
+
+
 @pytest.mark.parametrize("op", ["==", "in", "not in"])
 def test_marker_item_with_other_rules(op: str) -> None:
     # Rules other than the default mapping must use the token path.
