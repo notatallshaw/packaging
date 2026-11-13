@@ -14,7 +14,6 @@ __lazy_modules__ = {
     f"{__spec__.parent}.specifiers",
     f"{__spec__.parent}.tags",
     f"{__spec__.parent}.utils",
-    f"{__spec__.parent}.version",
 }
 
 import dataclasses
@@ -93,6 +92,10 @@ _FromMappingProtocolT = TypeVar("_FromMappingProtocolT", bound=_FromMappingProto
 
 
 _PYLOCK_FILE_NAME_RE = re.compile(r"^pylock\.([^.]+)\.toml$")
+_MIN_LOCK_VERSION = Version("1")
+_SUPPORTED_LOCK_VERSION = Version("1.0")
+# Prereleases of the next major version are unsupported too.
+_NEXT_MAJOR_LOCK_VERSION = Version("2.dev0")
 
 
 def is_valid_pylock_path(path: Path) -> bool:
@@ -607,12 +610,11 @@ class Pylock:
             packages=_get_required_sequence_of_objects(d, Package, "packages"),
             tool=_get(d, Mapping, "tool"),  # type: ignore[type-abstract]
         )
-        # Prereleases of the next major version are unsupported too.
-        if not Version("1") <= pylock.lock_version < Version("2.dev0"):
+        if not _MIN_LOCK_VERSION <= pylock.lock_version < _NEXT_MAJOR_LOCK_VERSION:
             raise PylockUnsupportedVersionError(
                 f"pylock version {pylock.lock_version} is not supported"
             )
-        if pylock.lock_version > Version("1.0"):
+        if pylock.lock_version > _SUPPORTED_LOCK_VERSION:
             _logger.warning(
                 "pylock minor version %s is not supported", pylock.lock_version
             )
