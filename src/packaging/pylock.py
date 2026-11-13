@@ -40,7 +40,7 @@ from .markers import (
     prepare_environment,
 )
 from .specifiers import SpecifierSet
-from .tags import create_compatible_tags_selector, sys_tags
+from .tags import create_compatible_tags_selector, parse_tag, sys_tags
 from .utils import (
     NormalizedName,
     canonicalize_name,
@@ -841,7 +841,11 @@ class Pylock:
                 #    a lack of source for the project.
                 best_wheel = next(
                     compatible_tags_selector(
-                        (wheel, parse_wheel_filename(wheel.filename)[-1])
+                        # Validation already checked the name, version and structure.
+                        (
+                            wheel,
+                            parse_tag("-".join(wheel.filename[:-4].rsplit("-", 3)[1:])),
+                        )
                         for wheel in package.wheels
                     ),
                     None,
