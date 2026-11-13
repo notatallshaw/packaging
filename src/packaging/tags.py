@@ -6,6 +6,7 @@ from __future__ import annotations
 
 __lazy_modules__ = {
     "importlib.machinery",
+    "itertools",
     "operator",
     "platform",
     "re",
@@ -25,6 +26,7 @@ import sys
 import sysconfig
 from collections.abc import Iterable, Iterator, Sequence
 from importlib.machinery import EXTENSION_SUFFIXES
+from itertools import product, starmap
 from typing import (
     TYPE_CHECKING,
     TypeVar,
@@ -318,12 +320,10 @@ def parse_tag(
     for interpreter in interpreters:
         if not interpreter.isidentifier():
             raise InvalidTag(f"Tag {tag!r} has an invalid interpreter: {interpreter!r}")
-    return frozenset(
-        Tag(interpreter, abi, platform_)
-        for interpreter in interpreters
-        for abi in abis
-        for platform_ in platforms
-    )
+    if tag_count == 1:
+        return frozenset({Tag(interpreters[0], abis[0], platforms[0])})
+
+    return frozenset(starmap(Tag, product(interpreters, abis, platforms)))
 
 
 def _get_config_var(name: str, warn: bool = False) -> int | str | None:
