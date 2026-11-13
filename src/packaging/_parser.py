@@ -6,17 +6,22 @@ the implementation.
 
 from __future__ import annotations
 
-__lazy_modules__ = {
-    "ast",
-    f"{__spec__.parent}._tokenizer",
-    f"{__spec__.parent}.specifiers",
-}
+__lazy_modules__ = {"ast", f"{__spec__.parent}.specifiers"}
 
 import ast
+import re
 from typing import Literal, NamedTuple, TypeAlias, cast
 
 from ._tokenizer import DEFAULT_RULES, ParserSyntaxError, Tokenizer
 from .specifiers import InvalidSpecifier, SpecifierSet
+
+_DEFAULT_OP_OR_NOT_IN = re.compile(
+    DEFAULT_RULES["OP"].pattern
+    + "|"
+    + DEFAULT_RULES["NOT"].pattern
+    + DEFAULT_RULES["WS"].pattern
+    + DEFAULT_RULES["IN"].pattern
+)
 
 
 class Node:
@@ -466,13 +471,21 @@ def _parse_marker_op(tokenizer: Tokenizer) -> Op:
     rules = tokenizer.rules
     if tokenizer.match_pattern(rules["IN"]) is not None:
         return Op("in")
-    elif tokenizer.match_pattern(rules["NOT"]) is not None:
+    if rules is DEFAULT_RULES:
+        match = tokenizer.match_pattern(_DEFAULT_OP_OR_NOT_IN)
+        if match is not None:
+            operator = match[0]
+            return Op("not in" if operator[0] == "n" else operator)
+
+    # Incomplete 'not in' expressions need token-level error spans.
+    if tokenizer.match_pattern(rules["NOT"]) is not None:
         tokenizer.expect("WS", expected="whitespace after 'not'")
         tokenizer.expect("IN", expected="'in' after 'not'")
         return Op("not in")
-    match = tokenizer.match_pattern(rules["OP"])
-    if match is not None:
-        return Op(match[0])
+    if rules is not DEFAULT_RULES:
+        match = tokenizer.match_pattern(rules["OP"])
+        if match is not None:
+            return Op(match[0])
     return tokenizer.raise_syntax_error(
         "Expected marker operator, one of <=, <, !=, ==, >=, >, ~=, ===, in, not in"
     )
