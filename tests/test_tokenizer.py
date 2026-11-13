@@ -8,7 +8,7 @@ import re
 import pytest
 
 from packaging._parser import _parse_marker
-from packaging._tokenizer import DEFAULT_RULES, Tokenizer
+from packaging._tokenizer import DEFAULT_RULES, ParserSyntaxError, Tokenizer
 
 
 @pytest.mark.parametrize("whitespace", ["", " ", "\t", " \t  "])
@@ -62,3 +62,41 @@ def test_marker_item_with_other_rules(op: str) -> None:
     assert str(_parse_marker(tokenizer)) == (
         f"[(<Variable('os_name')>, <Op({op!r})>, <Value('a')>)]"
     )
+
+
+def test_custom_marker_operator_rules_keep_their_precedence() -> None:
+    rules = dict(DEFAULT_RULES, IN=re.compile("=="))
+    tokenizer = Tokenizer('os_name == "a"', rules=rules)
+    marker = _parse_marker(tokenizer)
+
+    assert tokenizer.position == len(tokenizer.source)
+    atom = marker[0]
+    assert isinstance(atom, tuple)
+    assert atom[1].value == "in"
+
+
+def test_custom_marker_operator_rules_reject_unknown_operator() -> None:
+    tokenizer = Tokenizer('os_name ? "posix"', rules=dict(DEFAULT_RULES))
+
+    with pytest.raises(ParserSyntaxError, match="Expected marker operator"):
+        _parse_marker(tokenizer)
+
+
+def test_custom_symbolic_marker_operator_rule() -> None:
+    tokenizer = Tokenizer(
+        'os_name <> "a"', rules=dict(DEFAULT_RULES, OP=re.compile("<>"))
+    )
+    atom = _parse_marker(tokenizer)[0]
+
+    assert isinstance(atom, tuple)
+    assert atom[1].value == "<>"
+
+
+@pytest.mark.parametrize("operator", ["not in", "not\tin", "not \t in"])
+def test_not_in_operator_whitespace(operator: str) -> None:
+    tokenizer = Tokenizer(f'os_name {operator} "a"', rules=DEFAULT_RULES)
+    atom = _parse_marker(tokenizer)[0]
+
+    assert isinstance(atom, tuple)
+    assert atom[1].value == "not in"
+    assert tokenizer.position == len(tokenizer.source)
