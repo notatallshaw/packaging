@@ -421,15 +421,11 @@ def _parse_marker_var(tokenizer: Tokenizer) -> MarkerVar:  # noqa: RET503
     position = tokenizer.position
     match = tokenizer.match_pattern(tokenizer.rules["VARIABLE"])
     if match is not None:
-        return _process_marker_var(match[0])
+        return process_env_var(match[0].replace(".", "_"))
     match = tokenizer.match_pattern(tokenizer.rules["QUOTED_STRING"])
     if match is not None:
         return _process_marker_value(tokenizer, match[0], position)
     tokenizer.raise_syntax_error(message="Expected a marker variable or quoted string")
-
-
-def _process_marker_var(text: str) -> Variable:
-    return process_env_var(text.replace(".", "_"))
 
 
 def _process_marker_value(tokenizer: Tokenizer, text: str, position: int) -> Value:
