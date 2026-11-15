@@ -186,10 +186,12 @@ def _normalize_extras(
     lhs, op, rhs = result
     if isinstance(lhs, Variable) and lhs.value == "extra" and isinstance(rhs, Value):
         normalized_extra = canonicalize_name(rhs.value)
-        rhs = Value(normalized_extra)
+        if normalized_extra != rhs.value:
+            rhs = Value(normalized_extra)
     elif isinstance(rhs, Variable) and rhs.value == "extra" and isinstance(lhs, Value):
         normalized_extra = canonicalize_name(lhs.value)
-        lhs = Value(normalized_extra)
+        if normalized_extra != lhs.value:
+            lhs = Value(normalized_extra)
     elif (
         isinstance(rhs, Variable)
         and rhs.value in MARKERS_ALLOWING_SET
@@ -201,7 +203,9 @@ def _normalize_extras(
         # parse time keeps __str__/__eq__/__hash__ consistent with evaluate() -- e.g.
         # Marker('"Foo" in extras') and Marker('"foo" in extras') must compare and
         # hash equal (the membership variable is always the right-hand operand).
-        lhs = Value(canonicalize_name(lhs.value))
+        normalized_extra = canonicalize_name(lhs.value)
+        if normalized_extra != lhs.value:
+            lhs = Value(normalized_extra)
     return lhs, op, rhs
 
 
