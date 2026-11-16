@@ -454,40 +454,13 @@ def _make_above_after_posts(version: Version) -> Callable[[Version], bool]:
 
 
 def _make_above_after_locals(version: Version) -> Callable[[Version], bool]:
-    """Predicate ``parsed > AFTER_LOCALS(V)`` for a lower bound.
-
-    Used by the upper-side range of ``!=V`` (when V has no local
-    segment). AFTER_LOCALS sits above V and every ``V+local`` but
-    just below ``V.post0``.
-    """
-    version_ge = version.__ge__
-    version_epoch = version.epoch
-    version_pre = version.pre
-    version_post = version.post
-    version_dev = version.dev
-    version_release_trimmed = trim_release(version.release)
-    trimmed_length = len(version_release_trimmed)
+    """Match above a public version and all of its local labels."""
+    # The first three key fields identify the complete public version.
+    version_key = version._key[:3]
 
     def above(parsed: Version) -> bool:
-        if version_ge(parsed):
-            return False
-        # parsed > V cmpkey-wise: above the boundary iff NOT in V's
-        # local family (same public version, any local segment).
-        if parsed.epoch != version_epoch:
-            return True
-        parsed_release = parsed.release
-        if len(parsed_release) < trimmed_length:
-            return True
-        if parsed_release[:trimmed_length] != version_release_trimmed:
-            return True
-        for i in range(trimmed_length, len(parsed_release)):
-            if parsed_release[i] != 0:
-                return True
-        if parsed.pre != version_pre:
-            return True
-        if parsed.post != version_post:
-            return True
-        return parsed.dev != version_dev
+        key = parsed._key_cache or parsed._key
+        return key[:3] > version_key
 
     return above
 
