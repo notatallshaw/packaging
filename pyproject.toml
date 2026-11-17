@@ -72,6 +72,7 @@ lint = [
   { include-group = "editable-build" },
 ]
 nox = ["nox>=2026.10.20", "packaging"]
+build = ["build", "twine"]
 locks = ["nab==0.0.31.dev0"]
 licenses = ["httpx"]
 [tool.flit.sdist]
@@ -285,3 +286,16 @@ url = "git+https://github.com/notatallshaw/nab.git@d98f736469222fe7a51f675a49fc5
 [[tool.nab.vcs-sources]]
 name = "nab-resolver"
 url = "git+https://github.com/notatallshaw/nab.git@d98f736469222fe7a51f675a49fc5cc7174ca4a2#subdirectory=nab-resolver"
+
+[tool.nab.plans.build]
+groups = ["build"]
+build-requirements = true
+
+[tool.nab.plans.build.settings]
+mode = "specific"
+requires-python = ">=3.14,<3.15"
+dist-policy = "wheel-only"
+
+[tool.nab.plans.build.settings.environment]
+python = "3.14"
+platform = "linux_x86_64"
