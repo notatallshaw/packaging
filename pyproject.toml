@@ -75,6 +75,27 @@ nox = ["nox>=2026.10.20", "packaging"]
 build = ["build", "twine"]
 locks = ["nab==0.0.31.dev0"]
 licenses = ["httpx"]
+pickle-21-0 = [
+  "packaging==21.0",
+  { include-group = "editable-build" },
+]
+pickle-24-0 = [
+  "packaging==24.0",
+  { include-group = "editable-build" },
+]
+pickle-25-0 = [
+  "packaging==25.0",
+  { include-group = "editable-build" },
+]
+pickle-26-0 = [
+  "packaging==26.0",
+  { include-group = "editable-build" },
+]
+pickle-26-1 = [
+  "packaging==26.1",
+  { include-group = "editable-build" },
+]
+
 [tool.flit.sdist]
 include = ["tests/", "docs/", "CHANGELOG.rst"]
 exclude = [
@@ -299,3 +320,23 @@ dist-policy = "wheel-only"
 [tool.nab.plans.build.settings.environment]
 python = "3.14"
 platform = "linux_x86_64"
+
+[tool.nab.plans.pickle-21-0]
+output = "tasks/pickle/pylock.pickle-21-0.toml"
+groups = ["pickle-21-0"]
+
+[tool.nab.plans.pickle-24-0]
+output = "tasks/pickle/pylock.pickle-24-0.toml"
+groups = ["pickle-24-0"]
+
+[tool.nab.plans.pickle-25-0]
+output = "tasks/pickle/pylock.pickle-25-0.toml"
+groups = ["pickle-25-0"]
+
+[tool.nab.plans.pickle-26-0]
+output = "tasks/pickle/pylock.pickle-26-0.toml"
+groups = ["pickle-26-0"]
+
+[tool.nab.plans.pickle-26-1]
+output = "tasks/pickle/pylock.pickle-26-1.toml"
+groups = ["pickle-26-1"]
