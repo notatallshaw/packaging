@@ -45,7 +45,10 @@ jobs:
           asv machine --yes
 
       - name: Run ASV continuous benchmark
-        run: asv continuous origin/main HEAD --interleave-rounds --sort default --no-only-changed | tee -a asv_output.txt || true
+        run: >-
+          asv continuous origin/main HEAD --interleave-rounds
+          --attribute rounds=8 --attribute repeat=3
+          --sort default --no-only-changed | tee -a asv_output.txt || true
 
       - name: Write out to GitHub Summary
         run: python tasks/asv_summary.py asv_output.txt --comment-dir asv-comment >> "$GITHUB_STEP_SUMMARY"
